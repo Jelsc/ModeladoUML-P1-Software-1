@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+dist/
+backend/exporters/generated/
+backend/exporters/json/
+.codegraph/
+
+Proyecto Alex/
+prueba para pizarra.xmi
+
+# Modelos LLM (archivos grandes)
+*.gguf
+*.ggml
+*.bin

@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const pages = readFileSync(new URL('../src/pages/board-canvas.jsx', import.meta.url), 'utf8');
+const gestures = readFileSync(new URL('../src/features/canvas/useCanvasGestures.js', import.meta.url), 'utf8');
+const collaboration = readFileSync(new URL('../src/features/canvas/useCanvasCollaboration.js', import.meta.url), 'utf8');
+const interaction = `${pages}\n${gestures}\n${collaboration}`;
+const styles = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
+
+assert.match(pages, /className="zoom-controls"/);
+assert.match(interaction, /if \(event\.target\.closest\("\.zoom-controls"\)\) return/);
+assert.match(interaction, /event\.preventDefault\(\);[\s\S]{0,180}changeZoom\(/);
+assert.match(interaction, /event\.button !== 2/);
+assert.match(interaction, /panPosition\(/);
+assert.match(interaction, /setPointerCapture/);
+assert.match(interaction, /mode: "pending"/);
+assert.match(interaction, /classifyGesture\(/);
+assert.match(interaction, /e\.pointerType === "touch" \|\| e\.button !== 0/);
+assert.match(interaction, /event\.pointerId !== pointerId/);
+assert.match(interaction, /classDragCancels\.current/);
+assert.match(interaction, /activePointers\.current\.size === 2/);
+assert.match(interaction, /gesture\.current = null/);
+assert.match(pages, /activeRelationContext = hoverContext \|\| relationContext\(selectedRelation\)/);
+assert.match(pages, /relationContext=\{activeRelationContext\}/);
+assert.match(interaction, /gesturestart.*gesturechange.*gestureend.*touchmove/s);
+assert.match(interaction, /event\.ctrlKey|event\.preventDefault\(\);\s*changeZoom/s);
+assert.match(pages, /onContextMenu=\{\(event\) => event\.preventDefault\(\)\}/);
+assert.match(styles, /\.canvas\s*\{[\s\S]*overflow:\s*hidden;/);
+assert.match(styles, /\.canvas\s*\{[\s\S]*overscroll-behavior:\s*none;/);
+assert.match(styles, /\.canvas\s*\{[\s\S]*touch-action:\s*none;/);
+assert.match(styles, /\.zoom-controls\s*\{[\s\S]*position:\s*absolute;/);
+console.log('Canvas interaction checks passed.');

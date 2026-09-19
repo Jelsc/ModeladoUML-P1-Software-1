@@ -1,0 +1,76 @@
+import 'dart:convert';
+
+enum SyncState { synced, pending, conflict, failed }
+
+class LocalRecord {
+  const LocalRecord({
+    required this.entity,
+    required this.recordId,
+    required this.data,
+    this.serverVersion,
+    required this.updatedAt,
+    this.deletedAt,
+    this.syncState = SyncState.synced,
+  });
+  final String entity;
+  final String recordId;
+  final Map<String, dynamic> data;
+  final int? serverVersion;
+  final DateTime updatedAt;
+  final DateTime? deletedAt;
+  final SyncState syncState;
+  String get summary => '$entity/$recordId ${jsonEncode(data)}';
+}
+
+class OutboxOperation {
+  const OutboxOperation({
+    required this.operationId,
+    required this.entity,
+    required this.recordId,
+    required this.operation,
+    required this.payload,
+    this.baseVersion,
+    required this.createdAt,
+    required this.status,
+    this.lastError,
+    required this.attempts,
+  });
+  final String operationId;
+  final String entity;
+  final String recordId;
+  final String operation;
+  final Map<String, dynamic> payload;
+  final int? baseVersion;
+  final DateTime createdAt;
+  final SyncState status;
+  final String? lastError;
+  final int attempts;
+}
+
+class SyncChange {
+  const SyncChange({
+    required this.entity,
+    required this.recordId,
+    required this.operation,
+    required this.payload,
+    required this.version,
+  });
+  final String entity;
+  final String recordId;
+  final String operation;
+  final Map<String, dynamic> payload;
+  final int version;
+}
+
+class PushResult {
+  const PushResult({
+    required this.operationId,
+    required this.status,
+    this.record,
+    this.error,
+  });
+  final String operationId;
+  final SyncState status;
+  final LocalRecord? record;
+  final String? error;
+}

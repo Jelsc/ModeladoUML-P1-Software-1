@@ -1,0 +1,3 @@
+export function ZoomControls({ zoom, minZoom, maxZoom, zoomStep, zoomPercent, onZoom }) {
+  return <div className="zoom-controls" aria-label="Controles de zoom"><button type="button" className="ghost zoom-button" onClick={() => onZoom(zoom - zoomStep)} disabled={zoom <= minZoom} aria-label="Alejar" title="Alejar">−</button><output aria-live="polite" aria-label="Nivel de zoom">{zoomPercent(zoom)}</output><button type="button" className="ghost zoom-button" onClick={() => onZoom(zoom + zoomStep)} disabled={zoom >= maxZoom} aria-label="Acercar" title="Acercar">+</button><button type="button" className="ghost zoom-reset" onClick={() => onZoom(1)} disabled={zoom === 1} aria-label="Restablecer zoom" title="Restablecer zoom">Restablecer</button></div>;
+}
