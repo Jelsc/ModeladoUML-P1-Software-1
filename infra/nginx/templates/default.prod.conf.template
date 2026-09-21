@@ -2,8 +2,12 @@ server {
     listen 80;
     server_name ${FRONTEND_DOMAIN} ${API_DOMAIN};
 
-    location /.well-known/acme-challenge/ {
+    location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
+    }
+
+    location ~ (^|/)\. {
+        return 404;
     }
 
     location / {
@@ -16,6 +20,10 @@ server {
     server_name ${FRONTEND_DOMAIN};
     ssl_certificate /etc/letsencrypt/live/${CERTBOT_CERT_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${CERTBOT_CERT_NAME}/privkey.pem;
+
+    location ~ (^|/)\. {
+        return 404;
+    }
 
     location /api/ {
         proxy_pass http://backend:8000/;
@@ -42,6 +50,10 @@ server {
     server_name ${API_DOMAIN};
     ssl_certificate /etc/letsencrypt/live/${CERTBOT_CERT_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${CERTBOT_CERT_NAME}/privkey.pem;
+
+    location ~ (^|/)\. {
+        return 404;
+    }
 
     location / {
         proxy_pass http://backend:8000;

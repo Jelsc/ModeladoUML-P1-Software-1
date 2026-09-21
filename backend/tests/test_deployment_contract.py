@@ -63,6 +63,7 @@ def test_deployment_ingress_is_environment_configurable_and_databases_are_privat
 
 
 def test_production_bootstrap_and_certificate_names_are_safe_and_consistent():
+    nginx = (ROOT / "infra/nginx/nginx.conf").read_text()
     bootstrap = (ROOT / "infra/nginx/templates/default.prod-bootstrap.conf.template").read_text()
     production = (ROOT / "infra/nginx/templates/default.prod.conf.template").read_text()
     compose = COMPOSE
@@ -76,3 +77,22 @@ def test_production_bootstrap_and_certificate_names_are_safe_and_consistent():
     assert "server_name ${API_DOMAIN};" in production
     assert "proxy_pass http://backend:8000;" in production
     assert '"--publish", "127.0.0.1::5432"' in (ROOT / "backend/app/deployment.py").read_text()
+
+
+def test_nginx_hash_capacity_and_sensitive_path_guards_are_contractual():
+    nginx = (ROOT / "infra/nginx/nginx.conf").read_text()
+    bootstrap = (ROOT / "infra/nginx/templates/default.prod-bootstrap.conf.template").read_text()
+    production = (ROOT / "infra/nginx/templates/default.prod.conf.template").read_text()
+    assert "server_names_hash_bucket_size 128;" in nginx
+    templates = [
+        ROOT / "infra/nginx/templates/default.prod.conf.template",
+        ROOT / "infra/nginx/templates/default.prod-bootstrap.conf.template",
+        ROOT / "infra/nginx/templates/default.local.conf.template",
+        ROOT / "frontend/nginx.conf",
+    ]
+    for template in templates:
+        content = template.read_text()
+        assert "location ~ (^|/)\\." in content
+        assert "return 404;" in content
+    assert "location ^~ /.well-known/acme-challenge/" in bootstrap
+    assert "location ^~ /.well-known/acme-challenge/" in production
