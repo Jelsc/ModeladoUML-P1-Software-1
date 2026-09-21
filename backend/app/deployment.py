@@ -3,7 +3,7 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import settings
@@ -140,7 +140,11 @@ def cleanup(deployment: Deployment):
 def _gateway_config(slug, container_name):
     if not SAFE_SLUG.fullmatch(slug) or not SAFE_NAME.fullmatch(container_name):
         raise ValueError("Ruta de gateway inválida")
-    return f"server {{\n    listen 80;\n    server_name api-{slug}.localhost;\n    location / {{\n        proxy_pass http://{container_name}:8080;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }}\n}}\n"
+    host = f"api-{slug}.{settings.DEPLOY_PUBLIC_DOMAIN}"
+    proxy = f"server {{\n    listen 80;\n    server_name {host};\n    location / {{\n        proxy_pass http://{container_name}:8080;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $connection_upgrade;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }}\n}}\n"
+    if settings.APP_ENV.lower() in {"prod", "production", "vm"}:
+        proxy += f"server {{\n    listen 443 ssl;\n    server_name {host};\n    ssl_certificate /etc/letsencrypt/live/{settings.CERTBOT_CERT_NAME}/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/{settings.CERTBOT_CERT_NAME}/privkey.pem;\n    location / {{\n        proxy_pass http://{container_name}:8080;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $connection_upgrade;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }}\n}}\n"
+    return proxy
 
 
 def write_route(slug, container_name):
@@ -184,7 +188,7 @@ def _database_run_args(database, slug, username, password):
         "--network-alias", "db", "--memory", "256m", "--cpus", "0.5", "--pids-limit", "128",
         "--label", "uml.generated=true", "--label", f"uml.slug={slug}", "--publish", "127.0.0.1::5432",
         "--env", f"POSTGRES_DB={DATABASE_NAME}", "--env", f"POSTGRES_USER={username}",
-        "--env", f"POSTGRES_PASSWORD={password}",
+        "--env", f"POSTGRES_PASSWORD={password}", "--env", "TZ=America/La_Paz", "--env", "PGTZ=America/La_Paz",
         "--health-cmd", f"pg_isready -U {username} -d {DATABASE_NAME}", "--health-interval", "5s",
         "--health-timeout", "3s", "--health-retries", "20", "--volume",
         f"uml-generated-data-{slug}:/var/lib/postgresql/data", "postgres:16-alpine",
@@ -235,9 +239,10 @@ def deploy(deployment_id):
         _wait_healthy(container, timeout=180)
         write_route(slug, container)
         deployment.status = "running"
-        port = "" if settings.DEPLOY_GATEWAY_PORT == 80 else f":{settings.DEPLOY_GATEWAY_PORT}"
-        deployment.url = f"http://api-{slug}.localhost{port}"
-        deployment.updated_at = datetime.utcnow()
+        gateway_port = settings.DEPLOY_GATEWAY_HTTPS_PORT if settings.DEPLOY_PUBLIC_SCHEME == "https" else settings.DEPLOY_GATEWAY_PORT
+        port = "" if gateway_port in (80, 443) else f":{gateway_port}"
+        deployment.url = f"{settings.DEPLOY_PUBLIC_SCHEME}://api-{slug}.{settings.DEPLOY_PUBLIC_DOMAIN}{port}"
+        deployment.updated_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as exc:
         deployment.status = "failed"
@@ -247,7 +252,7 @@ def deploy(deployment_id):
             cleanup(deployment)
         except Exception:
             pass
-        deployment.updated_at = datetime.utcnow()
+        deployment.updated_at = datetime.now(timezone.utc)
         db.commit()
     finally:
         db.close()

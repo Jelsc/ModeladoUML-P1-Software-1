@@ -1,5 +1,5 @@
 import json, math, re, time, uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,12 +19,14 @@ from .assistant.executor import execute as execute_assistant
 from .assistant.parser import parse as parse_assistant
 from .assistant.schemas import AssistantCommand, ExecuteRequest, ParseRequest
 from .assistant.gemini import try_interpret
+from .vision import router as vision_router
 from exporters.uml import export_zip
 from exporters.sql_ddl import ddl_to_diagram, generate_ddl, parse_ddl
 from exporters.postman import generate_postman_collection
 from exporters.xmi import export_xmi, parse_xmi, replace_diagram
 
 app = FastAPI(title="Collaborative UML Editor")
+app.include_router(vision_router)
 app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in settings.CORS_ORIGINS.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class Credentials(BaseModel):
@@ -128,7 +130,7 @@ def relation_type(value):
     try: return RelationType(value)
     except ValueError: raise HTTPException(422, "Tipo de relación inválido")
 def touch_diagram(db, diagram):
-    diagram.updated_at = datetime.utcnow()
+    diagram.updated_at = datetime.now(timezone.utc)
     db.flush()
 def endpoint_for(db, endpoint_id, endpoint_type, class_id):
     endpoint_type = endpoint_type.lower()
@@ -430,7 +432,6 @@ async def delete_item(kind: str, item_id: uuid.UUID, db: Session = Depends(get_d
 async def add_relation(diagram_id: uuid.UUID, body: RelationIn, db: Session = Depends(get_db), user=Depends(current_user)):
     d = editable(db, user, diagram_id); source = db.query(UmlClass).filter_by(id=body.source_id, diagram_id=d.id).first(); target = db.query(UmlClass).filter_by(id=body.target_id, diagram_id=d.id).first()
     if not source or not target: raise HTTPException(422, "Ambos extremos deben pertenecer al diagrama")
-    if source.id == target.id: raise HTTPException(422, "Una relación requiere dos clases distintas")
     source_type = body.source_endpoint_type.lower(); target_type = body.target_endpoint_type.lower()
     endpoint_for(db, body.source_endpoint, source_type, source.id); endpoint_for(db, body.target_endpoint, target_type, target.id)
     duplicate = db.query(Relation).filter_by(diagram_id=d.id, source_id=source.id, target_id=target.id, source_endpoint=body.source_endpoint, target_endpoint=body.target_endpoint, type=relation_type(body.type)).first()
@@ -508,7 +509,7 @@ def start_deployment(diagram_id: uuid.UUID, tasks: BackgroundTasks, db: Session 
         current.url = None
         current.error_summary = None
         current.project_json = json.dumps(diagram_json(diagram), ensure_ascii=False)
-        current.updated_at = datetime.utcnow()
+        current.updated_at = datetime.now(timezone.utc)
     else:
         try:
             slug = slugify(diagram.title, str(diagram.id))
@@ -553,7 +554,7 @@ def stop_deployment(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=D
     cleanup(diagram.deployment)
     diagram.deployment.status = "stopped"
     diagram.deployment.url = None
-    diagram.deployment.updated_at = datetime.utcnow()
+    diagram.deployment.updated_at = datetime.now(timezone.utc)
     db.commit()
     return deployment_json(diagram.deployment)
 @app.websocket("/diagrams/{diagram_id}/ws")

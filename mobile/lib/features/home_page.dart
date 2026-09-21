@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../assistant/orchestrator.dart';
 import '../config/api_config.dart';
@@ -16,6 +17,8 @@ import '../offline/database.dart';
 import '../offline/repository.dart';
 import '../offline/sync_engine.dart';
 import '../offline/models.dart';
+import '../speech/speech_output.dart';
+import '../timezone.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -31,13 +34,14 @@ class _Message {
 
 enum _AssistantMode { history, alexa }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _url = TextEditingController();
   final _request = TextEditingController();
   final _client = UapClient();
   final _models = ModelManager();
   final _engine = AndroidLlamaCppEngine();
   final _voice = const OfflineVoice();
+  final SpeechOutput _speech = AndroidSpeechOutput();
   UapSnapshot? _snapshot;
   String? _modelPath;
   String? _modelInstallError;
@@ -47,13 +51,21 @@ class _HomePageState extends State<HomePage> {
   bool _listening = false;
   _AssistantMode _mode = _AssistantMode.history;
   final _messages = <_Message>[];
+  String? _lastSpokenText;
   OfflineRepository? _repository;
   SyncEngine? _syncEngine;
   String _syncLabel = 'Solo local';
+  String _backendStatus = 'offline';
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  Timer? _retryTimer;
+  Timer? _pendingTimer;
+  int _retryAttempt = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((_) => _scheduleReconnect());
     _restore();
   }
 
@@ -61,6 +73,21 @@ class _HomePageState extends State<HomePage> {
     try {
       final database = await openOfflineDatabase();
       _repository = OfflineRepository(database);
+      _snapshot = await _repository!.cachedSnapshot();
+      _backendStatus = await _repository!.backendStatus();
+      _syncEngine = SyncEngine(
+        _repository!,
+        HttpSyncTransport(
+          _client.baseUrl,
+          headers: {
+            if (hostHeaderFor(_client.baseUrl) != null)
+              'host': hostHeaderFor(_client.baseUrl)!,
+          },
+        ),
+      );
+      final cachedSync = await _repository!.lastSyncAt();
+      if (_snapshot != null) _syncLabel = cachedSync == null ? 'Usando datos locales' : 'Usando datos locales · ${_formatTime(cachedSync)}';
+      if ((await _repository!.pendingOperations()).isNotEmpty) _startPendingTimer();
     } catch (_) {
       _repository = null;
     }
@@ -94,8 +121,13 @@ class _HomePageState extends State<HomePage> {
         _url.text.trim().isEmpty ? activeBackendUrl : _url.text,
       );
       final snapshot = await _client.discover(normalized);
+      await _repository?.saveSnapshot(snapshot);
+      await _repository?.saveBackendStatus('online');
       setState(() {
         _snapshot = snapshot;
+        _backendStatus = 'online';
+        _retryAttempt = 0;
+        _retryTimer?.cancel();
         _url.text = normalized;
         if (_repository != null) {
           _syncEngine = SyncEngine(
@@ -110,8 +142,16 @@ class _HomePageState extends State<HomePage> {
           );
         }
       });
+      await _syncNow(automatic: true);
     } catch (error) {
-      setState(() => _error = _clean(error));
+      await _repository?.saveBackendStatus('offline');
+      if (mounted) setState(() {
+        _backendStatus = 'offline';
+        _syncLabel = _snapshot == null ? 'Backend desconectado' : 'Usando datos locales';
+        _error = _snapshot == null
+            ? 'No hay un contrato UAP en caché. Conectate una vez para habilitar el CRUD offline; el asistente local sigue disponible para consultas generales.'
+            : 'Backend desconectado. Usando datos locales.';
+      });
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -120,14 +160,9 @@ class _HomePageState extends State<HomePage> {
   Future<void> _send() async {
     final request = _request.text.trim();
     if (request.isEmpty) return;
-    if (_snapshot == null) {
-      setState(
-        () => _error = 'Conectá un backend UAP antes de enviar una solicitud.',
-      );
-      return;
-    }
+    final snapshot = _snapshot ?? UapSnapshot.empty;
     setState(() {
-      _messages.add(_Message('You', request));
+      _messages.add(_Message('Vos', request));
       _request.clear();
       _busy = true;
       _error = null;
@@ -147,48 +182,88 @@ class _HomePageState extends State<HomePage> {
       if (mounted) setState(() {});
       final localRecords =
           await _repository?.summaries() ?? const <LocalRecord>[];
+      if (mounted) setState(() => _syncLabel = 'Interpretando');
       final raw = await _engine.generate(
         PromptBuilder.build(
-          _snapshot!,
+           snapshot,
           request,
           localRecords: localRecords,
           syncStatus: _syncLabel,
         ),
       );
+      if (mounted) setState(() => _syncLabel = 'Validando');
       final intent = IntentValidator.parse(
         raw,
-        _snapshot!.toolList,
+         snapshot.toolList,
         request: request,
-        schema: _snapshot!.schema,
+         schema: snapshot.schema,
       );
       if (!intent.isToolCall) {
-        setState(() => _messages.add(_Message('Assistant', intent.text!)));
+        final text = intent.text!;
+        setState(() => _messages.add(_Message('Asistente', text)));
+        await _speakIfAlexa(text);
         return;
       }
-      final tool = _snapshot!.toolList.firstWhere(
+      final tool = snapshot.toolList.firstWhere(
         (item) => item.id == intent.toolId,
       );
-      if (tool.isWrite && !await _confirm(tool)) {
-        setState(
-          () => _messages.add(
-            _Message('Assistant', AssistantResultFormatter.cancelled(tool)),
-          ),
-        );
+      if (tool.isWrite) setState(() => _syncLabel = 'Esperando confirmación');
+      if (const ConfirmationGate().requires(tool) && !await _confirm(tool)) {
+        final text = AssistantResultFormatter.cancelled(tool);
+        setState(() => _messages.add(_Message('Asistente', text)));
+        await _speakIfAlexa(text);
         return;
       }
       try {
+        final operation = UapValidator.operation(tool);
+        final entity = UapValidator.entity(tool);
+        if (_backendStatus != 'online' && (operation == 'list' || operation == 'get')) {
+          if (_repository == null) throw StateError('No hay almacenamiento local disponible.');
+          final Map<String, dynamic> result;
+          if (operation == 'get') {
+            final record = await _repository!.read(entity, intent.input['id'].toString());
+            result = {'data': record?.data};
+          } else {
+            final records = (await _repository!.summaries(entity: entity)).where((record) => record.deletedAt == null).toList();
+            result = {'data': records.map((record) => record.data).toList()};
+          }
+          final text = '${AssistantResultFormatter.read(tool, result)} Datos locales${await _lastSyncSuffix()}.';
+          setState(() => _messages.add(_Message('Asistente', text)));
+          await _speakIfAlexa(text);
+          return;
+        }
+        if (_backendStatus != 'online' && tool.isWrite) {
+          if (_repository == null) throw StateError('No hay almacenamiento local disponible.');
+          await _queueOfflineMutation(tool, intent.input);
+          const text = 'El backend está desconectado. El cambio se guardó en datos locales y quedó pendiente de sincronización.';
+          setState(() => _messages.add(const _Message('Asistente', text)));
+          await _speakIfAlexa(text);
+          return;
+        }
         final result = await _client.invoke(
           tool,
           intent.input,
           confirmed: true,
         );
         final text = tool.isWrite
-            ? AssistantResultFormatter.mutation(tool, result)
+            ? AssistantResultFormatter.mutation(
+                tool,
+                result,
+                input: intent.input,
+              )
             : AssistantResultFormatter.read(tool, result);
         if (tool.isWrite)
           await _cacheSuccessfulMutation(tool, intent.input, result);
-        setState(() => _messages.add(_Message('Assistant', text)));
+        if (!tool.isWrite) await _cacheRead(tool, result);
+        await _repository?.saveBackendStatus('online');
+        if (mounted) setState(() => _backendStatus = 'online');
+        setState(() => _messages.add(_Message('Asistente', text)));
+        await _speakIfAlexa(text);
       } catch (error) {
+        if (_isConnectivityError(error)) {
+          await _repository?.saveBackendStatus('offline');
+          if (mounted) setState(() => _backendStatus = 'offline');
+        }
         if (tool.isWrite &&
             _repository != null &&
             _isConnectivityError(error)) {
@@ -196,26 +271,41 @@ class _HomePageState extends State<HomePage> {
           setState(
             () => _messages.add(
               const _Message(
-                'Assistant',
+                'Asistente',
                 'El backend no está disponible. El cambio se guardó localmente y quedó pendiente.',
               ),
             ),
           );
+          await _speakIfAlexa(
+            'El backend no está disponible. El cambio se guardó localmente y quedó pendiente.',
+          );
           return;
         }
-        setState(
-          () => _messages.add(
-            _Message(
-              'Assistant',
-              AssistantResultFormatter.failure(tool, error),
-            ),
-          ),
-        );
+        if (!tool.isWrite && _repository != null && _snapshot != null) {
+          final operation = UapValidator.operation(tool);
+          if (operation == 'list' || operation == 'get') {
+            final Map<String, dynamic> result;
+            if (operation == 'get') {
+              final record = await _repository!.read(UapValidator.entity(tool), intent.input['id'].toString());
+              result = {'data': record?.data};
+            } else {
+              final records = (await _repository!.summaries(entity: UapValidator.entity(tool))).where((record) => record.deletedAt == null).toList();
+              result = {'data': records.map((record) => record.data).toList()};
+            }
+            final text = '${AssistantResultFormatter.read(tool, result)} Datos locales${await _lastSyncSuffix()}.';
+            if (mounted) setState(() => _messages.add(_Message('Asistente', text)));
+            await _speakIfAlexa(text);
+            return;
+          }
+        }
+        final text = AssistantResultFormatter.failure(tool, error);
+        setState(() => _messages.add(_Message('Asistente', text)));
+        await _speakIfAlexa(text);
       }
     } catch (error) {
-      setState(
-        () => _messages.add(_Message('Assistant', _actionableError(error))),
-      );
+      final text = _actionableError(error);
+      setState(() => _messages.add(_Message('Asistente', text)));
+      await _speakIfAlexa(text);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -255,6 +345,13 @@ class _HomePageState extends State<HomePage> {
     return 'No pude completar la solicitud. $value';
   }
 
+  Future<void> _speakIfAlexa(String text) async {
+    if (_mode != _AssistantMode.alexa || text == _lastSpokenText) return;
+    _lastSpokenText = text;
+    await _speech.stop();
+    await _speech.speak(text);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -284,11 +381,11 @@ class _HomePageState extends State<HomePage> {
     padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
     child: Row(
       children: [
-        Icon(_snapshot == null ? Icons.cloud_off : Icons.cloud_done, size: 16),
+        Icon(_backendStatus == 'online' ? Icons.cloud_done : Icons.cloud_off, size: 16),
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            _snapshot == null ? 'Backend desconectado' : 'UAP conectado',
+             _backendLabel,
             style: Theme.of(context).textTheme.labelLarge,
           ),
         ),
@@ -408,7 +505,7 @@ class _HomePageState extends State<HomePage> {
           itemBuilder: (context, index) {
             final message = _messages[index];
             return Align(
-              alignment: message.author == 'You'
+              alignment: message.author == 'Vos'
                   ? Alignment.centerRight
                   : Alignment.centerLeft,
               child: Container(
@@ -416,7 +513,7 @@ class _HomePageState extends State<HomePage> {
                 margin: const EdgeInsets.only(bottom: 12),
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: message.author == 'You'
+                  color: message.author == 'Vos'
                       ? Theme.of(context).colorScheme.primaryContainer
                       : Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(18),
@@ -486,9 +583,14 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _connectivitySubscription?.cancel();
+    _retryTimer?.cancel();
+    _pendingTimer?.cancel();
     _url.dispose();
     _request.dispose();
     _engine.dispose();
+    _speech.dispose();
     super.dispose();
   }
 
@@ -605,6 +707,7 @@ class _HomePageState extends State<HomePage> {
       recordId: id,
       data: data,
       state: SyncState.synced,
+      deletedAt: UapValidator.operation(tool) == 'delete' ? DateTime.now() : null,
     );
     if (mounted) setState(() => _syncLabel = 'Sincronizado');
   }
@@ -616,41 +719,102 @@ class _HomePageState extends State<HomePage> {
     final entity = tool.raw['entity']?.toString() ?? tool.id.split('.').first;
     final id =
         input['id']?.toString() ??
-        'local-${DateTime.now().microsecondsSinceEpoch}';
-    final operation = tool.operation.isEmpty
+        _localUuid();
+    final operation = UapValidator.operation(tool).isEmpty
         ? tool.id.split('.').last
-        : tool.operation;
-    await _repository!.upsert(
-      entity: entity,
-      recordId: id,
-      data: input,
-      state: SyncState.pending,
-      deletedAt: operation == 'delete' ? DateTime.now() : null,
-    );
-    await _repository!.enqueue(
+        : UapValidator.operation(tool);
+    await _repository!.applyLocalMutation(
       entity: entity,
       recordId: id,
       operation: operation,
       payload: input,
-      baseVersion: null,
     );
-    if (mounted) setState(() => _syncLabel = 'Pendiente');
+    _startPendingTimer();
+    if (mounted) setState(() => _syncLabel = 'Pendiente de sincronización');
   }
 
-  Future<void> _syncNow() async {
+  Future<void> _syncNow({bool automatic = false}) async {
     if (_syncEngine == null) return;
     setState(() => _syncLabel = 'Sincronizando...');
     try {
-      await _syncEngine!.sync();
-      if (mounted) setState(() => _syncLabel = 'Sincronizado');
+      final state = await _syncEngine!.sync();
+      await _repository?.saveBackendStatus('online');
+      if (mounted)
+        setState(() {
+          _backendStatus = 'online';
+          _syncLabel = switch (state) {
+            SyncState.conflict => 'Conflicto',
+            SyncState.failed => 'Fallido',
+            _ => 'Sincronizado',
+          };
+        });
     } catch (error) {
       if (mounted)
-        setState(
-          () => _syncLabel = _clean(error).contains('no disponible')
+        setState(() {
+          _backendStatus = 'offline';
+          _syncLabel = _clean(error).contains('no disponible')
               ? 'Protocolo de sincronización no disponible'
-              : 'Sincronización fallida',
-        );
+              : 'Fallido';
+        });
+      if (!automatic) await _repository?.saveBackendStatus('offline');
     }
+  }
+
+  String get _backendLabel => _backendStatus == 'online'
+      ? 'Backend conectado'
+      : _snapshot == null ? 'Backend desconectado' : 'Backend desconectado · usando datos locales';
+
+  void _scheduleReconnect() {
+    if (_retryAttempt >= 5 || _retryTimer?.isActive == true) return;
+    final delays = [1, 2, 5, 10, 30];
+    _retryTimer = Timer(Duration(seconds: delays[_retryAttempt]), () async {
+      _retryAttempt++;
+      await _connect();
+      if (_backendStatus != 'online') _scheduleReconnect();
+    });
+  }
+
+  void _startPendingTimer() {
+    _pendingTimer ??= Timer.periodic(const Duration(minutes: 2), (_) {
+      if (_backendStatus != 'online') _scheduleReconnect();
+      else _syncNow(automatic: true);
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _retryAttempt = 0;
+      _scheduleReconnect();
+    }
+  }
+
+  Future<void> _cacheRead(UapTool tool, dynamic result) async {
+    if (_repository == null) return;
+    final entity = UapValidator.entity(tool);
+    final data = result is Map ? result['data'] : result;
+    if (data is List) {
+      for (final item in data.whereType<Map>()) {
+        final value = item.cast<String, dynamic>();
+        final id = value['id']?.toString();
+        if (id != null) await _repository!.upsert(entity: entity, recordId: id, data: value);
+      }
+    } else if (data is Map && data['id'] != null) {
+      final value = data.cast<String, dynamic>();
+      await _repository!.upsert(entity: entity, recordId: value['id'].toString(), data: value);
+    }
+  }
+
+  Future<String> _lastSyncSuffix() async {
+    final value = await _repository?.lastSyncAt();
+    return value == null ? '' : ' · última sincronización ${_formatTime(value)}';
+  }
+
+  String _formatTime(DateTime? value) => value == null ? 'nunca' : boliviaTime(value);
+
+  String _localUuid() {
+    final seed = DateTime.now().microsecondsSinceEpoch.toRadixString(16).padLeft(12, '0');
+    return '00000000-0000-4000-8000-${seed.substring(seed.length - 12)}';
   }
 
   bool _isConnectivityError(Object error) =>

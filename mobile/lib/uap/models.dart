@@ -30,4 +30,24 @@ class UapSnapshot {
       .whereType<Map>()
       .map((item) => UapTool(item.cast<String, dynamic>()))
       .toList();
+
+  Map<String, dynamic> toJson() => {
+    'manifest': manifest,
+    'schema': schema,
+    'tools': tools,
+    'permissions': permissions,
+    'businessRules': businessRules,
+  };
+
+  factory UapSnapshot.fromJson(Map<String, dynamic> json) => UapSnapshot(
+    manifest: (json['manifest'] as Map? ?? const {}).cast<String, dynamic>(),
+    schema: (json['schema'] as Map? ?? const {}).cast<String, dynamic>(),
+    tools: (json['tools'] as Map? ?? const {}).cast<String, dynamic>(),
+    permissions: (json['permissions'] as Map? ?? const {}).cast<String, dynamic>(),
+    businessRules: (json['businessRules'] as Map? ?? const {}).cast<String, dynamic>(),
+  );
+
+  static const empty = UapSnapshot(
+    manifest: {}, schema: {}, tools: {}, permissions: {}, businessRules: {},
+  );
 }

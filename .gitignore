@@ -9,9 +9,10 @@ backend/exporters/json/
 .codegraph/
 
 Proyecto Alex/
-prueba para pizarra.xmi
+opencode.jsonc
 
 # Modelos LLM (archivos grandes)
 *.gguf
+mobile/assets/models/assistant.gguf
 *.ggml
 *.bin

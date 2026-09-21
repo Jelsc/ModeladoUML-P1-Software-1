@@ -78,4 +78,11 @@ class UapClient {
     }
     return body;
   }
+
+  Future<void> health() async {
+    final response = await _http.get(Uri.parse('$baseUrl/uap/v1/manifest'), headers: _headers()).timeout(const Duration(seconds: 5));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Backend no disponible (HTTP ${response.statusCode}).');
+    }
+  }
 }

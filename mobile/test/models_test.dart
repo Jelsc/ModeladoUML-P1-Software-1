@@ -1,7 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:universal_uap_client/timezone.dart';
 import 'package:universal_uap_client/uap/models.dart';
 
 void main() {
+  test('formats UTC instants in Bolivia time without a four-hour drift', () {
+    expect(boliviaTime(DateTime.parse('2026-01-15T12:00:00Z')), '08:00');
+  });
   test('groups tools by side effects and confirmation metadata', () {
     final snapshot = UapSnapshot(
       manifest: {},

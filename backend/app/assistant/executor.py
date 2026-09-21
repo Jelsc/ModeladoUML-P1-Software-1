@@ -27,6 +27,6 @@ async def execute(db, user, diagram_id, command):
         db.delete(relation); touch_diagram(db, diagram); db.commit(); await publish(diagram.id, "relation.deleted", {"relation_id": str(command.relation_id)}); return {"ok": True}
     if action == "create_relation":
         source = db.query(UmlClass).filter_by(id=command.source_class_id, diagram_id=diagram.id).first(); target = db.query(UmlClass).filter_by(id=command.target_class_id, diagram_id=diagram.id).first()
-        if not source or not target or source.id == target.id: raise HTTPException(422, "Los extremos deben ser dos clases distintas del diagrama")
+        if not source or not target: raise HTTPException(422, "Ambos extremos deben pertenecer al diagrama")
         item = Relation(diagram_id=diagram.id, source_id=source.id, target_id=target.id, source_endpoint_type="class", target_endpoint_type="class", type=relation_type(command.relation_type)); db.add(item); touch_diagram(db, diagram); db.commit(); db.refresh(item); await publish(diagram.id, "relation.created", {"relation": relation_json(item)}); return relation_json(item)
     raise HTTPException(422, "Acción de asistente no permitida")

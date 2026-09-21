@@ -135,7 +135,13 @@ class ModelPathPolicy {
     try {
       final file = File(path);
       final length = await file.length();
-      return await file.exists() && length > 0 && length <= maxModelBytes;
+      if (!await file.exists() || length <= 0 || length > maxModelBytes) {
+        return false;
+      }
+      final header = await file
+          .openRead(0, 4)
+          .fold<List<int>>(<int>[], (bytes, chunk) => bytes..addAll(chunk));
+      return header.length == 4 && String.fromCharCodes(header) == 'GGUF';
     } on FileSystemException {
       return false;
     }

@@ -44,7 +44,35 @@ def test_worker_has_fixed_docker_surface_and_safe_paths():
 
 def test_gateway_isolated_and_frontend_wiring_exists():
     assert "deploy-gateway:" in COMPOSE
-    assert "networks: [uml-generated]" in COMPOSE
+    assert "networks: [default, uml-generated]" in COMPOSE
     assert "deploy_gateway_config" in COMPOSE
     assert "DeploymentPanel" in FRONTEND
     assert "onDeploy={owner ? () => setDeploymentOpen(true) : null}" in PAGES
+
+
+def test_deployment_ingress_is_environment_configurable_and_databases_are_private():
+    config = (ROOT / "backend/app/config.py").read_text()
+    worker = (ROOT / "backend/app/deployment.py").read_text()
+    env = (ROOT / ".env.example").read_text()
+    nginx = (ROOT / "infra/nginx/templates/default.prod.conf.template").read_text()
+    assert "DEPLOY_PUBLIC_SCHEME" in config and "DEPLOY_PUBLIC_DOMAIN" in config
+    assert "api-{slug}.{settings.DEPLOY_PUBLIC_DOMAIN}" in worker
+    assert '"--publish", "127.0.0.1::5432"' in worker
+    assert "include /etc/nginx/generated/*.conf;" in nginx
+    assert "DEPLOY_PUBLIC_DOMAIN" in env and "APP_ENV=local" in env
+
+
+def test_production_bootstrap_and_certificate_names_are_safe_and_consistent():
+    bootstrap = (ROOT / "infra/nginx/templates/default.prod-bootstrap.conf.template").read_text()
+    production = (ROOT / "infra/nginx/templates/default.prod.conf.template").read_text()
+    compose = COMPOSE
+    assert "include /etc/nginx/generated/*.conf;" not in bootstrap
+    assert "include /etc/nginx/generated/*.conf;" in production
+    assert "envsubst '$$FRONTEND_DOMAIN $$API_DOMAIN'" in compose
+    assert "envsubst '$$FRONTEND_DOMAIN $$API_DOMAIN $$CERTBOT_CERT_NAME'" in compose
+    assert "DEPLOY_CERT_NAME" not in compose
+    assert "DEPLOY_CERT_NAME" not in (ROOT / "backend/app/config.py").read_text()
+    assert "CERTBOT_CERT_NAME" in (ROOT / "backend/app/deployment.py").read_text()
+    assert "server_name ${API_DOMAIN};" in production
+    assert "proxy_pass http://backend:8000;" in production
+    assert '"--publish", "127.0.0.1::5432"' in (ROOT / "backend/app/deployment.py").read_text()

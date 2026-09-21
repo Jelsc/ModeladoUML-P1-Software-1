@@ -98,7 +98,7 @@ class ContextBroker {
   }
 
   String _safeRecord(LocalRecord record) =>
-      '${_safeToken(record.entity)}/${_safeToken(record.recordId)} ${_clip(_redact(jsonEncode(record.data)), 260)} [${record.syncState.name}]';
+      '${_safeToken(record.entity)}/${_safeToken(record.recordId)} ${_clip(_redact(jsonEncode(record.data)), 260)} [${record.isPendingLocal ? 'pendiente local' : record.syncState.name}]';
   String _safeToken(String value) =>
       _clip(value.replaceAll(RegExp(r'[^A-Za-z0-9_.:/ -]'), ''), 80);
   String _clip(String value, int max) =>

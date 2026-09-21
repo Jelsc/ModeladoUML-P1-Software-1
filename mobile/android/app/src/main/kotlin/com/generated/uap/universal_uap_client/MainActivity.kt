@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -19,9 +20,12 @@ import java.util.Locale
 class MainActivity : FlutterActivity() {
     private val channel = "uap/model_picker"
     private val voiceChannel = "uap/offline_voice"
+    private val ttsChannel = "uap/text_to_speech"
     private var pendingResult: MethodChannel.Result? = null
     private var pendingVoiceResult: MethodChannel.Result? = null
     private var recognizer: SpeechRecognizer? = null
+    private var textToSpeech: TextToSpeech? = null
+    private var ttsReady = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -50,6 +54,33 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "isAvailable" -> result.success(SpeechRecognizer.isRecognitionAvailable(this))
                     "listenOnce" -> listenOnce(result)
+                    else -> result.notImplemented()
+                }
+            }
+        textToSpeech = TextToSpeech(this) { status ->
+            ttsReady = status == TextToSpeech.SUCCESS
+            if (ttsReady) {
+                val spanish = textToSpeech?.setLanguage(Locale("es", "ES"))
+                if (spanish == TextToSpeech.LANG_MISSING_DATA || spanish == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    val fallback = textToSpeech?.setLanguage(Locale("es"))
+                    ttsReady = fallback != TextToSpeech.LANG_MISSING_DATA && fallback != TextToSpeech.LANG_NOT_SUPPORTED
+                }
+            }
+        }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ttsChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "speak" -> {
+                        val text = call.argument<String>("text")?.trim()
+                        if (!ttsReady || text.isNullOrEmpty()) {
+                            result.error("TTS_UNAVAILABLE", "No hay una voz española disponible en el dispositivo.", null)
+                        } else {
+                            textToSpeech?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "uap-response")
+                            result.success(null)
+                        }
+                    }
+                    "stop" -> { textToSpeech?.stop(); result.success(null) }
+                    "dispose" -> { textToSpeech?.stop(); textToSpeech?.shutdown(); ttsReady = false; result.success(null) }
                     else -> result.notImplemented()
                 }
             }
@@ -124,6 +155,9 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         recognizer?.destroy()
         recognizer = null
+        textToSpeech?.stop()
+        textToSpeech?.shutdown()
+        textToSpeech = null
         super.onDestroy()
     }
 

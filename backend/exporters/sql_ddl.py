@@ -9,10 +9,12 @@ import re
 import uuid
 from dataclasses import dataclass, field
 
+from .cardinality import classify_cardinality
 
-SUPPORTED_TYPES = {"UUID", "TEXT", "INTEGER", "BIGINT", "NUMERIC", "DECIMAL", "BOOLEAN", "DATE", "TIMESTAMP", "VARCHAR"}
-TYPE_TO_UML = {"UUID": "uuid", "TEXT": "string", "VARCHAR": "string", "INTEGER": "integer", "BIGINT": "long", "NUMERIC": "decimal", "DECIMAL": "decimal", "BOOLEAN": "boolean", "DATE": "date", "TIMESTAMP": "datetime"}
-UML_TO_SQL = {"uuid": "UUID", "string": "TEXT", "integer": "INTEGER", "long": "BIGINT", "decimal": "NUMERIC", "boolean": "BOOLEAN", "date": "DATE", "datetime": "TIMESTAMP"}
+
+SUPPORTED_TYPES = {"UUID", "TEXT", "INTEGER", "BIGINT", "NUMERIC", "DECIMAL", "BOOLEAN", "DATE", "TIMESTAMP", "TIMESTAMPTZ", "VARCHAR"}
+TYPE_TO_UML = {"UUID": "uuid", "TEXT": "string", "VARCHAR": "string", "INTEGER": "integer", "BIGINT": "long", "NUMERIC": "decimal", "DECIMAL": "decimal", "BOOLEAN": "boolean", "DATE": "date", "TIMESTAMP": "datetime", "TIMESTAMPTZ": "datetime"}
+UML_TO_SQL = {"uuid": "UUID", "string": "TEXT", "integer": "INTEGER", "long": "BIGINT", "decimal": "NUMERIC", "boolean": "BOOLEAN", "date": "DATE", "datetime": "TIMESTAMPTZ"}
 UNSAFE = re.compile(r"\b(DROP|TRUNCATE|ALTER|INSERT|UPDATE|DELETE|SELECT|DO|COPY|CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|TRIGGER))\b", re.I)
 IDENT = r'("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)'
 
@@ -156,6 +158,22 @@ def _sql_identifier(value):
     return value if re.match(r"^[a-z_]", value) else "_" + value
 
 
+def _many_to_many(relation):
+    return str(relation.get("type", "association")).lower() == "association" and classify_cardinality(relation)["kind"] == "many_to_many"
+
+
+def _join_table_name(relation):
+    source = _sql_identifier(relation.get("from") or relation.get("source"))
+    target = _sql_identifier(relation.get("to") or relation.get("target"))
+    relation_id = _sql_identifier(relation.get("id") or relation.get("label") or "relation")
+    return _sql_identifier(f"{source}_{target}_{relation_id}_join")
+
+
+def _id_sql_type(item):
+    identifier = next((attribute for attribute in item.get("attributes", []) if _sql_identifier(attribute.get("name")) == "id"), None)
+    return UML_TO_SQL.get(str(identifier.get("type", "long")).lower(), "BIGINT") if identifier else "BIGINT"
+
+
 def generate_ddl(diagram: dict) -> str:
     classes = diagram.get("classes", [])
     by_name = {c.get("name"): c for c in classes}
@@ -165,17 +183,36 @@ def generate_ddl(diagram: dict) -> str:
         for attr in item.get("attributes", []):
             name = _sql_identifier(attr.get("name")); uml_type = str(attr.get("type", "string")).lower(); sql_type = UML_TO_SQL.get(uml_type, "TEXT")
             columns.append(f"    {name} {sql_type}" + (" PRIMARY KEY" if name == "id" else ""))
-        if not any(_sql_identifier(a.get("name")) == "id" for a in item.get("attributes", [])): columns.append("    id UUID PRIMARY KEY")
+        if not any(_sql_identifier(a.get("name")) == "id" for a in item.get("attributes", [])): columns.append("    id BIGINT PRIMARY KEY")
         for relation in diagram.get("relations", []):
-            if str(relation.get("type", "association")).lower() == "inheritance": continue
+            relation_type = str(relation.get("type", "association")).lower()
+            if relation_type == "inheritance" or _many_to_many(relation): continue
             source, target = relation.get("from") or relation.get("source"), relation.get("to") or relation.get("target")
-            if source != item.get("name") or target not in by_name: continue
-            target_id = next((a for a in by_name[target].get("attributes", []) if _sql_identifier(a.get("name")) == "id"), {"name": "id"})
-            column = relation.get("label") or f"{_sql_identifier(target)}_id"
+            cardinality = classify_cardinality(relation) if relation_type == "association" else {"dependent": "source"}
+            dependent = cardinality["dependent"]
+            dependent_name = source if dependent == "source" else target
+            referenced_name = target if dependent == "source" else source
+            if dependent_name != item.get("name") or referenced_name not in by_name: continue
+            referenced_id = next((a for a in by_name[referenced_name].get("attributes", []) if _sql_identifier(a.get("name")) == "id"), {"name": "id", "type": "long"})
+            fk_type = UML_TO_SQL.get(str(referenced_id.get("type", "long")).lower(), "BIGINT")
+            column = relation.get("label") or f"{_sql_identifier(referenced_name)}_id"
             column = _sql_identifier(column) if not str(column).endswith("_id") else _sql_identifier(column)
-            if not any(line.startswith(f"    {column} ") for line in columns): columns.append(f"    {column} UUID")
-            columns.append(f"    FOREIGN KEY ({column}) REFERENCES {_sql_identifier(target)} ({_sql_identifier(target_id.get('name'))})")
+            if not any(line.startswith(f"    {column} ") for line in columns): columns.append(f"    {column} {fk_type}")
+            columns.append(f"    FOREIGN KEY ({column}) REFERENCES {_sql_identifier(referenced_name)} ({_sql_identifier(referenced_id.get('name'))})")
         lines += [f"CREATE TABLE {_sql_identifier(item.get('name'))} (", ",\n".join(columns), ");", ""]
+    for relation in sorted((item for item in diagram.get("relations", []) if _many_to_many(item)), key=lambda item: str(item.get("id") or item.get("label") or "")):
+        source = _sql_identifier(relation.get("from") or relation.get("source"))
+        target = _sql_identifier(relation.get("to") or relation.get("target"))
+        table = _join_table_name(relation)
+        source_item = by_name.get(relation.get("from") or relation.get("source"), {})
+        target_item = by_name.get(relation.get("to") or relation.get("target"), {})
+        lines += [
+            f"CREATE TABLE {table} (",
+            f"    source_id {_id_sql_type(source_item)} NOT NULL,\n    target_id {_id_sql_type(target_item)} NOT NULL,\n    PRIMARY KEY (source_id, target_id),\n"
+            f"    FOREIGN KEY (source_id) REFERENCES {source} (id),\n    FOREIGN KEY (target_id) REFERENCES {target} (id)",
+            ");",
+            "",
+        ]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -190,16 +227,16 @@ def ddl_to_diagram(result: DdlResult, current: dict) -> tuple[dict, list[dict]]:
     old_relations = current.get("relations", [])
     for table in result.tables:
         for fk in table["foreign_keys"]:
-            source, target = by_name.get(table["name"]), by_name.get(fk["table"])
-            if not source or not target: continue
-            old = next((r for r in old_relations if (r.get("from") or r.get("source")) == source["name"] and (r.get("to") or r.get("target")) == target["name"] and r.get("label") == fk["column"]), {})
-            source_attr = next((a for a in source.get("attributes", []) if a["name"] == fk["column"]), None)
-            target_attr = next((a for a in target.get("attributes", []) if a["name"] == fk.get("target", "id")), None)
-            src_ep = source_attr["id"] if source_attr else old.get("source_endpoint")
-            src_ep_type = "attribute" if source_attr else old.get("source_endpoint_type", "class")
-            tgt_ep = target_attr["id"] if target_attr else old.get("target_endpoint")
-            tgt_ep_type = "attribute" if target_attr else old.get("target_endpoint_type", "class")
-            relations.append({**old, "id": old.get("id", str(uuid.uuid4())), "source_id": source["id"], "target_id": target["id"], "from": source["name"], "to": target["name"], "type": "association", "label": fk["column"], "source_endpoint": src_ep, "target_endpoint": tgt_ep, "source_endpoint_type": src_ep_type, "target_endpoint_type": tgt_ep_type, "source_multiplicity": "0..*", "target_multiplicity": "0..1"})
+            dependent, referenced = by_name.get(table["name"]), by_name.get(fk["table"])
+            if not dependent or not referenced: continue
+            old = next((r for r in old_relations if (r.get("from") or r.get("source")) == referenced["name"] and (r.get("to") or r.get("target")) == dependent["name"] and r.get("label") == fk["column"]), {})
+            dependent_attr = next((a for a in dependent.get("attributes", []) if a["name"] == fk["column"]), None)
+            referenced_attr = next((a for a in referenced.get("attributes", []) if a["name"] == fk.get("target", "id")), None)
+            dep_ep = dependent_attr["id"] if dependent_attr else old.get("target_endpoint")
+            dep_ep_type = "attribute" if dependent_attr else old.get("target_endpoint_type", "class")
+            ref_ep = referenced_attr["id"] if referenced_attr else old.get("source_endpoint")
+            ref_ep_type = "attribute" if referenced_attr else old.get("source_endpoint_type", "class")
+            relations.append({**old, "id": old.get("id", str(uuid.uuid4())), "source_id": referenced["id"], "target_id": dependent["id"], "from": referenced["name"], "to": dependent["name"], "type": "association", "label": fk["column"], "source_endpoint": ref_ep, "target_endpoint": dep_ep, "source_endpoint_type": ref_ep_type, "target_endpoint_type": dep_ep_type, "source_multiplicity": "0..1", "target_multiplicity": "0..*"})
     warnings = list(result.warnings)
     removed = set(existing) - set(by_name)
     if removed: warnings.append(_error(f"Se reemplazarán las clases ausentes en el SQL: {', '.join(sorted(removed))}.", code="classes_removed"))

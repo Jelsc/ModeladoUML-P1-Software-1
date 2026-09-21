@@ -1,6 +1,8 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
+    APP_ENV: str = "local"
+    TIMEZONE: str = "America/La_Paz"
     DB_URL: str = "sqlite:///./uml.db"
     REDIS_URL: str = "redis://localhost:6379/0"
     JWT_SECRET: str = "change-me"
@@ -11,6 +13,10 @@ class Settings(BaseSettings):
     DEPLOY_GATEWAY_CONFIG_DIR: str = "/deploy-gateway"
     DEPLOY_GATEWAY_CONTAINER: str = "primer-parcial-sw1-deploy-gateway-1"
     DEPLOY_GATEWAY_PORT: int = 80
+    DEPLOY_GATEWAY_HTTPS_PORT: int = 443
+    DEPLOY_PUBLIC_SCHEME: str = "http"
+    DEPLOY_PUBLIC_DOMAIN: str = "localhost"
+    CERTBOT_CERT_NAME: str = "app-primerpacialsw.duckdns.org"
     DEPLOY_BUILD_TIMEOUT: int = 600
     DEPLOY_CREDENTIAL_SECRET: str | None = None
     WHISPER_MODEL: str = "base"

@@ -107,8 +107,6 @@ class GeminiProvider:
             raise GeminiProviderError
         if command.relation_id is not None and command.relation_id not in relation_ids:
             raise GeminiProviderError
-        if command.action == "create_relation" and command.source_class_id == command.target_class_id:
-            raise GeminiProviderError
         if command.attribute_type and command.attribute_type not in TYPES - {"void"}:
             raise GeminiProviderError
         if command.return_type and command.return_type not in TYPES:

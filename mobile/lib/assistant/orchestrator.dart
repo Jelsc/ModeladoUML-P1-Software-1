@@ -4,19 +4,9 @@ import '../uap/models.dart';
 import '../offline/models.dart';
 import 'context_broker.dart';
 
-class AssistantIntent {
-  const AssistantIntent.answer(this.text)
-    : toolId = null,
-      input = const {},
-      isToolCall = false;
-  const AssistantIntent.tool(this.toolId, this.input)
-    : text = null,
-      isToolCall = true;
-  final String? text;
-  final String? toolId;
-  final Map<String, dynamic> input;
-  final bool isToolCall;
-}
+import 'pipeline.dart';
+
+export 'pipeline.dart';
 
 class PromptBuilder {
   static const maxPromptCharacters = 6000;
@@ -91,56 +81,23 @@ class IntentValidator {
     String? request,
     Map<String, dynamic>? schema,
   }) {
-    dynamic decoded;
     try {
-      var normalized = raw.trim();
-      if (normalized.startsWith('```')) {
-        normalized = normalized.replaceFirst(
-          RegExp(r'^```(?:json)?\s*', caseSensitive: false),
-          '',
-        );
-        normalized = normalized.replaceFirst(RegExp(r'\s*```$'), '');
-      }
-      final start = normalized.indexOf('{');
-      final end = normalized.lastIndexOf('}');
-      if (start >= 0 && end > start)
-        normalized = normalized.substring(start, end + 1);
-      decoded = jsonDecode(normalized);
+      final decoded = const IntentInterpreter().decode(raw);
+      final intent = const UapCommandParser().parseModel(decoded, tools);
+      final validated = const UapValidator().validate(intent, tools);
+      if (validated.isToolCall || request == null) return validated;
+      final deterministic = const UapCommandParser().fromSpanish(
+        request,
+        tools,
+        schema ?? const {},
+      );
+      return const UapValidator().validate(deterministic, tools);
     } catch (_) {
       if (request != null) return _fallback(request, tools, schema ?? {});
       throw const FormatException(
         'El modelo local devolvió una respuesta no válida.',
       );
     }
-    if (decoded is! Map) {
-      throw const FormatException(
-        'La respuesta del modelo local debe ser un objeto JSON.',
-      );
-    }
-    final value = decoded.cast<String, dynamic>();
-    if (value['answer'] is String && value.length == 1) {
-      return AssistantIntent.answer(value['answer'] as String);
-    }
-    final id = value['tool'];
-    final input = value['input'];
-    final tool = tools.where((item) => item.id == id).firstOrNull;
-    if (tool == null ||
-        input is! Map ||
-        value.keys.any((key) => key != 'tool' && key != 'input')) {
-      throw const FormatException(
-        'La herramienta solicitada no está en la lista permitida descubierta.',
-      );
-    }
-    final fields = input.cast<String, dynamic>();
-    final properties = (tool.inputSchema['properties'] as Map?)?.keys
-        .map((key) => key.toString())
-        .toSet();
-    if (fields.keys.any(
-      (key) => properties == null || !properties.contains(key),
-    )) {
-      throw const FormatException('La entrada contiene un campo desconocido.');
-    }
-    return AssistantIntent.tool(tool.id, fields);
   }
 
   static AssistantIntent _fallback(
@@ -148,194 +105,122 @@ class IntentValidator {
     List<UapTool> tools,
     Map<String, dynamic> schema,
   ) {
-    final normalized = _normalize(request);
-    final operations = <String>{};
-    for (final entry in _operationWords.entries) {
-      if (entry.value.any((word) => _hasWord(normalized, _normalize(word)))) {
-        operations.add(entry.key);
-      }
-    }
-    if (operations.length != 1) return _clarification();
-    final operation = operations.single;
-    final operationTools = tools
-        .where((tool) => _toolOperation(tool) == operation)
-        .toList();
-    if (operationTools.isEmpty) return _clarification();
-
-    final entityTerms = <String>{
-      ..._schemaEntityNames(schema),
-      ...operationTools.map(_toolEntity),
-    }..removeWhere((value) => value.isEmpty);
-    final mentionedEntities = entityTerms
-        .where((entity) => _hasWord(normalized, _normalize(entity)))
-        .toList();
-    final candidates = mentionedEntities.isEmpty
-        ? operationTools
-        : operationTools
-              .where(
-                (tool) => mentionedEntities.any(
-                  (entity) =>
-                      _normalize(_toolEntity(tool)) == _normalize(entity),
-                ),
-              )
-              .toList();
-    if (candidates.length != 1) return _clarification();
-
-    final tool = candidates.single;
-    final properties =
-        ((tool.inputSchema['properties'] as Map?)?.keys ?? const [])
-            .map((key) => key.toString())
-            .toList();
-    final input = _explicitFields(request, properties);
-    if ((operation == 'get' || operation == 'delete') && input.isEmpty) {
-      return _clarification();
-    }
-    if ((operation == 'create' || operation == 'update') &&
-        properties.isNotEmpty &&
-        input.isEmpty) {
-      return _clarification();
-    }
-    return AssistantIntent.tool(tool.id, input);
-  }
-
-  static AssistantIntent _clarification() => const AssistantIntent.answer(
-    'No pude determinar una única acción con los datos disponibles. Indicá la operación, la entidad y, si corresponde, cada campo con su valor.',
-  );
-
-  static String _toolOperation(UapTool tool) {
-    final value = tool.operation.trim().toLowerCase();
-    if (_operationWords.containsKey(value)) return value;
-    final id = tool.id.toLowerCase();
-    return _operationWords.keys.firstWhere(
-      (operation) => id.endsWith('.$operation'),
-      orElse: () => '',
+    return const UapValidator().validate(
+      const UapCommandParser().fromSpanish(request, tools, schema),
+      tools,
     );
   }
-
-  static String _toolEntity(UapTool tool) =>
-      tool.raw['entity']?.toString() ?? tool.id.split('.').first;
-
-  static Set<String> _schemaEntityNames(Map<String, dynamic> schema) {
-    final raw = schema['entities'] ?? schema['models'] ?? schema['tables'];
-    if (raw is List) {
-      return raw
-          .whereType<Map>()
-          .map((item) => (item['name'] ?? item['id'] ?? '').toString())
-          .toSet();
-    }
-    if (raw is Map) return raw.keys.map((key) => key.toString()).toSet();
-    return {};
-  }
-
-  static Map<String, dynamic> _explicitFields(
-    String request,
-    List<String> properties,
-  ) {
-    final matches = <({String field, int start, String value})>[];
-    for (final field in properties) {
-      final normalizedField = _normalize(field);
-      if (normalizedField.isEmpty) continue;
-      final match = RegExp(
-        r'(^|\s)' +
-            RegExp.escape(normalizedField) +
-            r'(?:\s*[:=]\s*|\s+)([^,;]+)',
-        caseSensitive: false,
-      ).firstMatch(request);
-      if (match != null) {
-        matches.add((
-          field: field,
-          start: match.start,
-          value: match.group(2)!.trim(),
-        ));
-      }
-    }
-    matches.sort((a, b) => a.start.compareTo(b.start));
-    final result = <String, dynamic>{};
-    for (var index = 0; index < matches.length; index++) {
-      final current = matches[index];
-      var value = current.value;
-      if (index + 1 < matches.length) {
-        final next = matches[index + 1];
-        final boundary = request.substring(current.start, next.start);
-        final fieldStart = boundary.toLowerCase().lastIndexOf(
-          current.field.toLowerCase(),
-        );
-        if (fieldStart >= 0)
-          value = boundary.substring(fieldStart + current.field.length).trim();
-      }
-      value = value.replaceFirst(RegExp(r'^[=: ]+'), '').trim();
-      if (value.isNotEmpty) result[current.field] = value;
-    }
-    return result;
-  }
-
-  static bool _hasWord(String value, String word) =>
-      RegExp(r'(^|\s)' + RegExp.escape(word) + r'($|\s)').hasMatch(value);
-
-  static String _normalize(String value) => value
-      .toLowerCase()
-      .replaceAll('á', 'a')
-      .replaceAll('é', 'e')
-      .replaceAll('í', 'i')
-      .replaceAll('ó', 'o')
-      .replaceAll('ú', 'u')
-      .replaceAll('ü', 'u')
-      .replaceAll(RegExp(r'[^a-z0-9_.:=-]+'), ' ')
-      .trim();
-
-  static const _operationWords = <String, List<String>>{
-    'create': ['crear', 'crea', 'agregar', 'agrega', 'registrar', 'registra'],
-    'list': [
-      'listar',
-      'lista',
-      'mostrar',
-      'muestra',
-      'consultar',
-      'consulta',
-      'ver',
-    ],
-    'get': ['obtener', 'obtén', 'obten', 'detalle', 'dame'],
-    'update': [
-      'actualizar',
-      'actualiza',
-      'modificar',
-      'modifica',
-      'editar',
-      'edita',
-    ],
-    'delete': ['eliminar', 'elimina', 'borrar', 'borra'],
-  };
 }
 
 class AssistantResultFormatter {
   static String read(UapTool tool, dynamic result) {
-    final detail = _detail(result);
+    final data = result is Map ? result['data'] : result;
+    if (data is List) {
+      final entity = _entityLabel(tool);
+      if (data.isEmpty) return 'No hay ${entity} para mostrar.';
+      final records = data.whereType<Map>().map(_record).join(' · ');
+      return 'Encontré ${data.length} ${entity}: $records';
+    }
+    final detail = _detail(data);
     return detail.isEmpty
-        ? 'Encontré resultados para ${tool.name}.'
-        : 'Encontré resultados para ${tool.name}: $detail';
+        ? 'No encontré datos para ${_entityLabel(tool)}.'
+        : 'Encontré ${_entityLabel(tool, definite: true)}: $detail.';
   }
 
-  static String mutation(UapTool tool, dynamic result) =>
-      'Realicé ${tool.name}${_detail(result).isEmpty ? '.' : ': ${_detail(result)}'}';
+  static String mutation(
+    UapTool tool,
+    dynamic result, {
+    Map<String, dynamic> input = const {},
+  }) {
+    final operation = UapValidator.operation(tool);
+    final verb =
+        const {
+          'create': 'Registré',
+          'update': 'Actualicé',
+          'delete': 'Eliminé',
+        }[operation] ??
+        'Realicé';
+    final data = result is Map ? result['data'] : null;
+    if (result is Map && result.containsKey('data') && data == null) {
+      return 'No confirmé la operación sobre ${_entityLabel(tool, definite: false)}: el backend no devolvió los valores actualizados.';
+    }
+    if (data is Map) {
+      final record = data.cast<String, dynamic>();
+      final missing = input.keys
+          .where((key) => input[key] != null && record[key] == null)
+          .toList();
+      final different = input.keys.where((key) {
+        final expected = input[key];
+        final actual = record[key];
+        return expected != null &&
+            actual != null &&
+            expected.toString() != actual.toString();
+      }).toList();
+      var text =
+          '$verb ${_entityLabel(tool, definite: true)}: ${_record(record)}.';
+      if (missing.isNotEmpty || different.isNotEmpty) {
+        final fields = {...missing, ...different}.map(_fieldLabel).join(', ');
+        return 'No confirmé la actualización del ${_entityLabel(tool, definite: false)}: el backend devolvió valores ausentes o diferentes para $fields. Resultado real: ${_record(record)}.';
+      }
+      return text;
+    }
+    final message = result is Map && result['message'] is String
+        ? result['message'] as String
+        : null;
+    return '$verb ${_entityLabel(tool, definite: true)}${message == null ? '.' : '. El backend confirmó la operación.'}';
+  }
 
   static String cancelled(UapTool tool) =>
-      'No se realizó la acción para ${tool.name} porque se canceló la confirmación.';
+      'No se realizó la acción sobre ${_entityLabel(tool, definite: true)} porque se canceló la confirmación.';
 
   static String failure(UapTool tool, Object error) =>
-      'No pude realizar la acción para ${tool.name}. ${error.toString().replaceFirst('Exception: ', '')}';
+      'No pude realizar la acción sobre ${_entityLabel(tool, definite: true)}. El backend rechazó la solicitud.';
 
   static String _detail(dynamic result) {
-    if (result is Map && result['message'] is String)
-      return result['message'] as String;
-    if (result is Map && result['data'] != null)
-      return jsonEncode(result['data']);
-    if (result is List) return '${result.length} item(s)';
+    if (result is Map && result['data'] != null) return _detail(result['data']);
+    if (result is Map && result['message'] is String) return '';
+    if (result is List) return '${result.length} elementos';
+    if (result is Map) return _record(result);
     return result == null ? '' : _clip(jsonEncode(result), 500);
+  }
+
+  static String _entityLabel(UapTool tool, {bool definite = false}) {
+    final entity = (tool.raw['entity'] ?? tool.id.split('.').first).toString();
+    final singular = entity.endsWith('s') && !entity.endsWith('ss')
+        ? entity.substring(0, entity.length - 1)
+        : entity;
+    const labels = {
+      'user': 'usuarios',
+      'product': 'productos',
+      'order': 'pedidos',
+    };
+    final label = labels[singular] ?? entity;
+    return definite
+        ? 'el ${label.substring(0, label.length - (label.endsWith('s') ? 1 : 0))}'
+        : label;
+  }
+
+  static String _record(Map record) => record.entries
+      .map((entry) => '${_fieldLabel(entry.key)}: ${_value(entry.value)}')
+      .join(', ');
+
+  static String _fieldLabel(String field) =>
+      const {
+        'name': 'nombre',
+        'apellido': 'apellido',
+        'email': 'correo',
+        'active': 'activo',
+        'price': 'precio',
+        'stock': 'stock',
+        'lastName': 'apellido',
+      }[field] ??
+      field;
+
+  static String _value(dynamic value) {
+    if (value is bool) return value ? 'sí' : 'no';
+    return value?.toString() ?? 'sin dato';
   }
 
   static String _clip(String value, int max) =>
       value.length <= max ? value : '${value.substring(0, max - 3)}...';
 }
-
-extension<T> on Iterable<T> {
-  T? get firstOrNull => isEmpty ? null

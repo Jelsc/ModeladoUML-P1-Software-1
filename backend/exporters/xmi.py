@@ -6,7 +6,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from xml.sax.saxutils import escape
 
 from fastapi import HTTPException
@@ -99,12 +99,17 @@ def parse_xmi(data: bytes) -> XmiDocument:
 
     elements = {identifier: element for element in root.iter() if (identifier := element.attrib.get(XMI_ID))}
     warnings = []
+    metadata_counts = {}
+    parameter_loss_count = 0
+
+    def metadata_warning(category, message):
+        metadata_counts[category] = metadata_counts.get(category, 0) + 1
     if root.find(".//Documentation") is not None or any("Enterprise Architect" in str(item.attrib) for item in root.iter()):
-        warnings.append("Los metadatos específicos de Enterprise Architect no se conservan.")
+        metadata_warning("EA", "Los metadatos específicos de Enterprise Architect no se conservan.")
     if any(local(item) in {"diagram", "diagrams"} for item in root.iter()):
-        warnings.append("Los diagramas adicionales y sus metadatos no se conservan.")
+        metadata_warning("diagrams", "Los diagramas adicionales y sus metadatos no se conservan.")
     if any(local(item) in {"stereotype", "taggedValue", "property"} for item in root.iter()):
-        warnings.append("Los estereotipos, tags y propiedades extendidas no se conservan.")
+        metadata_warning("extended", "Los estereotipos, tags y propiedades extendidas no se conservan.")
 
     coordinates = {}
     for item in root.iter():
@@ -128,7 +133,7 @@ def parse_xmi(data: bytes) -> XmiDocument:
             warnings.append(f"El nombre de clase duplicado '{base_name}' se importó como '{name}'.")
         used_names.add(name.casefold())
         if item.attrib.get("visibility") or item.attrib.get("isAbstract"):
-            warnings.append(f"La visibilidad o abstracción de '{name}' no se conserva.")
+                metadata_warning("class modifiers", f"La visibilidad o abstracción de las clases no se conserva.")
         parsed = {"source_id": source_id, "name": name, "x": coordinates.get(source_id, (80, 80))[0], "y": coordinates.get(source_id, (80, 80))[1], "attributes": [], "methods": []}
         class_by_id[source_id] = parsed
         classes.append(parsed)
@@ -137,19 +142,19 @@ def parse_xmi(data: bytes) -> XmiDocument:
                 warnings.append(f"El extremo de asociación '{attribute.attrib.get('name', 'sin nombre')}' no se importó como atributo.")
                 continue
             if xtype(attribute) not in {"Property", ""}:
-                warnings.append(f"El atributo '{attribute.attrib.get('name', 'sin nombre')}' no es una Property UML compatible.")
+                metadata_warning("unsupported attributes", "Algunos atributos UML no son Property compatibles.")
                 continue
             parsed["attributes"].append({"source_id": attribute.attrib.get(XMI_ID), "name": attribute.attrib.get("name") or "atributo", "type": type_name(attribute, elements)})
             if any(key in attribute.attrib for key in ("visibility", "isStatic", "isReadOnly", "isDerived")):
-                warnings.append(f"La visibilidad o modificadores de '{attribute.attrib.get('name', 'atributo')}' no se conservan.")
+                metadata_warning("attribute modifiers", "La visibilidad o modificadores de algunos atributos no se conservan.")
         for operation in children(item, "ownedOperation"):
             parameters = children(operation, "ownedParameter")
             if any(parameter.attrib.get("direction") != "return" for parameter in parameters):
-                warnings.append(f"Los parámetros de '{operation.attrib.get('name', 'método')}' no se conservan.")
+                parameter_loss_count += 1
             return_parameter = next((parameter for parameter in parameters if parameter.attrib.get("direction") == "return"), None)
             return_type = type_name(return_parameter, elements) if return_parameter is not None else "void"
             if operation.attrib.get("visibility") or operation.attrib.get("isStatic"):
-                warnings.append(f"La visibilidad o modificadores de '{operation.attrib.get('name', 'método')}' no se conservan.")
+                metadata_warning("method modifiers", "La visibilidad o modificadores de algunos métodos no se conservan.")
             parsed["methods"].append({"source_id": operation.attrib.get(XMI_ID), "name": operation.attrib.get("name") or "método", "type": return_type})
 
     def endpoint_element(element):
@@ -210,7 +215,22 @@ def parse_xmi(data: bytes) -> XmiDocument:
                 warnings.append("Las abstracciones UML se importaron como dependencias porque el modelo actual no distingue ambos tipos.")
             relations.append({"source_id": source, "target_id": target, "type": "dependency", "label": item.attrib.get("name"), "source_multiplicity": None, "target_multiplicity": None, "source_endpoint": None, "target_endpoint": None})
     if any(local(item) == "waypoint" for item in root.iter()):
-        warnings.append("Los waypoints de relaciones no se conservan.")
+        metadata_warning("waypoints", "Los waypoints de relaciones no se conservan.")
+    for category, message in (
+        ("EA", "Los metadatos específicos de Enterprise Architect no se conservan."),
+        ("diagrams", "Los diagramas adicionales y sus metadatos no se conservan."),
+        ("extended", "Los estereotipos, tags y propiedades extendidas no se conservan."),
+        ("class modifiers", "La visibilidad o abstracción de las clases no se conserva."),
+        ("unsupported attributes", "Algunos atributos UML no son Property compatibles."),
+        ("association ends", "Los extremos de asociación no se importan como atributos."),
+        ("attribute modifiers", "La visibilidad o modificadores de algunos atributos no se conservan."),
+        ("method modifiers", "La visibilidad o modificadores de algunos métodos no se conservan."),
+        ("waypoints", "Los waypoints de relaciones no se conservan."),
+    ):
+        if metadata_counts.get(category):
+            warnings.append(f"{message} ({metadata_counts[category]} elementos).")
+    if parameter_loss_count:
+        warnings.append(f"Los parámetros de algunos métodos no se conservan ({parameter_loss_count} métodos).")
     return XmiDocument((next((item.attrib.get("name") for item in root.iter() if local(item) == "Model"), None) or "Diagrama importado").strip(), classes, relations, list(dict.fromkeys(warnings)))
 
 
@@ -230,12 +250,12 @@ def replace_diagram(db, diagram, document):
     db.flush()
     for item in document.relations:
         source, target = classes.get(item["source_id"]), classes.get(item["target_id"])
-        if not source or not target or source.id == target.id:
+        if not source or not target:
             raise HTTPException(422, "Una relación importada tiene extremos inválidos.")
         source_endpoint = details.get(item.get("source_endpoint"))
         target_endpoint = details.get(item.get("target_endpoint"))
         db.add(Relation(diagram_id=diagram.id, source_id=source.id, target_id=target.id, type=RelationType(item["type"]), label=item.get("label"), source_endpoint=source_endpoint.id if source_endpoint else None, target_endpoint=target_endpoint.id if target_endpoint else None, source_endpoint_type=item.get("source_endpoint_type", "class") if source_endpoint else "class", target_endpoint_type=item.get("target_endpoint_type", "class") if target_endpoint else "class", source_multiplicity=item.get("source_multiplicity"), target_multiplicity=item.get("target_multiplicity")))
-    diagram.updated_at = datetime.utcnow()
+    diagram.updated_at = datetime.now(timezone.utc)
     return diagram
 
 
@@ -259,12 +279,17 @@ def export_xmi(diagram):
     ]
     classes = sorted(diagram.get("classes", []), key=lambda item: (item.get("name", "").casefold(), str(item.get("id", ""))))
     class_ids = {str(item.get("id")): _stable_id("class", str(item.get("id"))) for item in classes}
+    class_by_id = {str(item.get("id")): item for item in classes}
     relations = sorted(diagram.get("relations", []), key=lambda item: (str(item.get("type", "")), str(item.get("source_id", "")), str(item.get("target_id", "")), str(item.get("id", ""))))
     relation_ids = {}
     for relation in relations:
         relation_key = str(relation.get("id") or f"{relation.get('source_id')}:{relation.get('target_id')}:{relation.get('type')}:{relation.get('label') or ''}")
         relation_ids[id(relation)] = _stable_id("generalization" if relation.get("type") == "inheritance" else "relation", relation_key)
 
+    valid_relations = [
+        relation for relation in relations
+        if str(relation.get("source_id")) in class_ids and str(relation.get("target_id")) in class_ids
+    ]
     common_types = {
         "string": "String", "integer": "Integer", "boolean": "Boolean",
         "float": "Float", "double": "Double", "date": "Date", "void": "void",
@@ -280,12 +305,17 @@ def export_xmi(diagram):
             return f'<type xmi:type="uml:PrimitiveType" href="{UML_NS}/uml.xml#{standard}"/>'
         return f'<type xmi:idref="{_stable_id("primitive", name)}"/>'
 
-    def value_bounds(value):
+    def value_bounds(value, relation_id, side):
         if not value:
             return ""
         low, high = (value.split("..", 1) if ".." in value else (value, value))
-        high = "-1" if high == "*" else high
-        return f'<lowerValue xmi:type="uml:LiteralInteger" value="{xml_value(low)}"/><upperValue xmi:type="uml:LiteralUnlimitedNatural" value="{xml_value(high)}"/>'
+        low = low or "0"
+        upper_unlimited = high in {"*", "-1"}
+        lower_id = _stable_id("lower", f"{relation_id}:{side}")
+        upper_id = _stable_id("upper", f"{relation_id}:{side}")
+        upper_type = "uml:LiteralUnlimitedNatural" if upper_unlimited else "uml:LiteralInteger"
+        upper_value = "*" if high == "*" else "-1" if upper_unlimited else high
+        return f'<lowerValue xmi:type="uml:LiteralInteger" xmi:id="{lower_id}" value="{xml_value(low)}"/><upperValue xmi:type="{upper_type}" xmi:id="{upper_id}" value="{xml_value(upper_value)}"/>'
 
     def endpoint_name(relation, side, class_item):
         info = relation.get(f"{side}_endpoint_info") or {}
@@ -293,6 +323,46 @@ def export_xmi(diagram):
 
     def relation_key(relation):
         return relation_ids[id(relation)]
+
+    def ea_local_id(prefix, value):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{prefix}:{value}").int % 100000)
+
+    def connector_type_xml(aggregation, multiplicity_value):
+        multiplicity_attribute = f' multiplicity="{xml_value(multiplicity_value)}"' if multiplicity_value else ""
+        return f'<type{multiplicity_attribute} aggregation="{xml_value(aggregation)}" containment="Unspecified"/>'
+
+    def connector_direction(relation_type):
+        return "Unspecified" if relation_type == "association" else "Source -> Destination"
+
+    def ea_connector_type(relation_type):
+        return {
+            "association": "Association",
+            "aggregation": "Aggregation",
+            "composition": "Aggregation",
+            "inheritance": "Generalization",
+            "dependency": "Dependency",
+            "abstraction": "Abstraction",
+        }.get(relation_type, "Association")
+
+    def relation_link_type(relation_type):
+        return ea_connector_type(relation_type)
+
+    def endpoint_ea_metadata(relation_type, side):
+        directional = relation_type != "association"
+        navigable = directional and side == "target"
+        style_navigation = {
+            "association": "Unspecified",
+            "dependency": "Non-Navigable" if side == "source" else "Navigable",
+            "aggregation": "Navigable" if side == "source" else "Unspecified",
+            "composition": "Navigable" if side == "source" else "Unspecified",
+            "abstraction": "Navigable" if side == "source" else "Unspecified",
+            "inheritance": None,
+        }.get(relation_type, "Unspecified")
+        modifiers = f'<modifiers isOrdered="false" changeable="none" isNavigable="{"true" if navigable else "false"}"/>'
+        style = "Union=0;Derived=0;AllowDuplicates=0;"
+        if style_navigation:
+            style += f"Owned=0;Navigable={style_navigation};"
+        return modifiers, f'<style value="{style}"/>'
 
     for item in classes:
         cid = class_ids[str(item.get("id"))]
@@ -303,6 +373,17 @@ def export_xmi(diagram):
         for method in sorted(item.get("methods", []), key=lambda value: (value.get("name", "").casefold(), str(value.get("id", "")))):
             mid = _stable_id("method", str(method.get("id", method.get("name", ""))))
             lines.append(f'        <ownedOperation xmi:type="uml:Operation" xmi:id="{mid}" name="{xml_value(method.get("name", ""))}" visibility="public"><ownedParameter xmi:type="uml:Parameter" xmi:id="{mid}_return" name="return" direction="return">{type_xml(method.get("type", "void"))}</ownedParameter></ownedOperation>')
+        for relation in valid_relations:
+            if relation.get("type") not in {"association", "aggregation", "composition"}:
+                continue
+            for side in ("source", "target"):
+                if str(relation.get(f"{side}_id")) != str(item.get("id")):
+                    continue
+                rid = relation_key(relation)
+                endpoint_name_value = endpoint_name(relation, side, item)
+                aggregation = relation.get(f"{side}_aggregation") or ("composite" if relation.get("type") == "composition" and side == "target" else "shared" if relation.get("type") == "aggregation" and side == "target" else "none")
+                multiplicity_value = relation.get(f"{side}_multiplicity")
+                lines.append(f'        <ownedAttribute xmi:type="uml:Property" xmi:id="{_stable_id("association-attribute", f"{rid}:{side}")}" name="{xml_value(endpoint_name_value)}" visibility="public" association="{rid}" aggregation="{aggregation}"><type xmi:idref="{class_ids[str(relation.get(f"{side}_id"))]}"/>{value_bounds(multiplicity_value, rid, side)}</ownedAttribute>')
         for relation in relations:
             if relation.get("type") == "inheritance" and str(relation.get("source_id")) == str(item.get("id")) and str(relation.get("target_id")) in class_ids:
                 rid = relation_key(relation)
@@ -327,37 +408,120 @@ def export_xmi(diagram):
                 optional_navigation = relation.get(f"{side}_navigable")
                 navigation = f' isNavigable="{"true" if optional_navigation else "false"}"' if optional_navigation is not None else ""
                 lines.append(f'        <memberEnd xmi:idref="{end}"/>')
-                lines.append(f'        <ownedEnd xmi:type="uml:Property" xmi:id="{end}" name="{xml_value(endpoint_name(relation, side, class_item))}" visibility="public" association="{rid}" aggregation="{aggregation}"{navigation}><type xmi:idref="{class_id}"/>{value_bounds(multiplicity_value)}</ownedEnd>')
+                lines.append(f'        <ownedEnd xmi:type="uml:Property" xmi:id="{end}" name="{xml_value(endpoint_name(relation, side, class_item))}" visibility="public" association="{rid}" aggregation="{aggregation}"{navigation}><type xmi:idref="{class_id}"/>{value_bounds(multiplicity_value, rid, side)}</ownedEnd>')
             lines.append("      </packagedElement>")
     lines.append("    </packagedElement>")
     lines.append("  </uml:Model>")
     lines.append('  <xmi:Extension extender="Enterprise Architect" extenderID="6.5">')
     lines.append("    <elements>")
     lines.append(f'      <element xmi:idref="{package_id}" xmi:type="uml:Package" name="{xml_value(title)}" scope="public"/>')
+
+    def class_links(item):
+        cid = class_ids[str(item.get("id"))]
+        links = []
+        for relation in valid_relations:
+            source_id, target_id = str(relation.get("source_id")), str(relation.get("target_id"))
+            if str(item.get("id")) not in {source_id, target_id}:
+                continue
+            rid = relation_key(relation)
+            links.append(f'        <{relation_link_type(relation.get("type"))} xmi:id="{rid}" start="{class_ids[source_id]}" end="{class_ids[target_id]}"/>')
+            if relation.get("type") in {"association", "aggregation", "composition"}:
+                for side in ("source", "target"):
+                    if str(relation.get(f"{side}_id")) == str(item.get("id")):
+                        endpoint_id = _stable_id("end", f"{rid}:{side}")
+                        links.append(f'        <Association xmi:id="{endpoint_id}" start="{rid}" end="{cid}"/>')
+        return links
+
     for item in classes:
         cid = class_ids[str(item.get("id"))]
-        lines.append(f'      <element xmi:idref="{cid}" xmi:type="uml:Class" name="{xml_value(item.get("name", ""))}" scope="public"/>')
-    for relation in relations:
-        if not class_ids.get(str(relation.get("source_id"))) or not class_ids.get(str(relation.get("target_id"))):
-            continue
+        links = class_links(item)
+        if links:
+            lines.append(f'      <element xmi:idref="{cid}" xmi:type="uml:Class" name="{xml_value(item.get("name", ""))}" scope="public"><links>')
+            lines.extend(links)
+            lines.append("      </links></element>")
+        else:
+            lines.append(f'      <element xmi:idref="{cid}" xmi:type="uml:Class" name="{xml_value(item.get("name", ""))}" scope="public"/>')
+    for relation in valid_relations:
         rid = relation_key(relation)
         xmi_type = "uml:Generalization" if relation.get("type") == "inheritance" else "uml:Association" if relation.get("type") in {"association", "aggregation", "composition"} else f'uml:{"Abstraction" if relation.get("type") == "abstraction" else "Dependency"}'
         lines.append(f'      <element xmi:idref="{rid}" xmi:type="{xmi_type}" name="{xml_value(relation.get("label") or "")}" scope="public"/>')
     lines.append("    </elements>")
     lines.append("    <connectors>")
-    for relation in relations:
-        if not class_ids.get(str(relation.get("source_id"))) or not class_ids.get(str(relation.get("target_id"))):
-            continue
+    for relation in valid_relations:
         rid = relation_key(relation)
-        lines.append(f'      <connector xmi:idref="{rid}" name="{xml_value(relation.get("label") or "")}"><source xmi:idref="{class_ids[str(relation.get("source_id"))]}"/><target xmi:idref="{class_ids[str(relation.get("target_id"))]}"/></connector>')
+        source_id, target_id = str(relation.get("source_id")), str(relation.get("target_id"))
+        source, target = class_by_id[source_id], class_by_id[target_id]
+        relation_type = relation.get("type", "association")
+        source_name = endpoint_name(relation, "source", source)
+        target_name = endpoint_name(relation, "target", target)
+        source_multiplicity = relation.get("source_multiplicity")
+        target_multiplicity = relation.get("target_multiplicity")
+        source_aggregation = relation.get("source_aggregation") or "none"
+        target_aggregation = relation.get("target_aggregation") or ("composite" if relation_type == "composition" else "shared" if relation_type == "aggregation" else "none")
+        label_attributes = []
+        if source_multiplicity:
+            label_attributes.append(f' lb="{xml_value(source_multiplicity)}"')
+        if target_multiplicity:
+            label_attributes.append(f' rb="{xml_value(target_multiplicity)}"')
+        if source_name:
+            label_attributes.append(f' lt="+{xml_value(source_name)}"')
+        if target_name:
+            label_attributes.append(f' rt="+{xml_value(target_name)}"')
+        if relation.get("label"):
+            label_attributes.append(f' mt="{xml_value(relation.get("label"))}"')
+        ea_type = {
+            "association": "Association",
+            "aggregation": "Aggregation",
+            "composition": "Aggregation",
+            "inheritance": "Generalization",
+            "dependency": "Dependency",
+            "abstraction": "Abstraction",
+        }.get(relation_type, "Association")
+        subtype = ' subtype="Strong"' if relation_type == "composition" else ' subtype="Weak"' if relation_type == "aggregation" else ""
+        source_modifiers, source_style = endpoint_ea_metadata(relation_type, "source")
+        target_modifiers, target_style = endpoint_ea_metadata(relation_type, "target")
+        lines.extend([
+            f'      <connector xmi:idref="{rid}" name="{xml_value(relation.get("label") or "")}">',
+            f'        <source xmi:idref="{class_ids[source_id]}"><model ea_localid="{ea_local_id("class", source_id)}" type="Class" name="{xml_value(source.get("name", ""))}"/><role name="{xml_value(source_name)}"/>{connector_type_xml(source_aggregation, source_multiplicity)}{source_modifiers}{source_style}</source>',
+            f'        <target xmi:idref="{class_ids[target_id]}"><model ea_localid="{ea_local_id("class", target_id)}" type="Class" name="{xml_value(target.get("name", ""))}"/><role name="{xml_value(target_name)}"/>{connector_type_xml(target_aggregation, target_multiplicity)}{target_modifiers}{target_style}</target>',
+            f'        <model ea_localid="{ea_local_id("connector", rid)}"/>',
+            f'        <properties ea_type="{ea_type}"{subtype} direction="{connector_direction(relation_type)}"/>',
+            '        <appearance linemode="3" linecolor="-1" linewidth="0"/>',
+            f'        <labels{"".join(label_attributes)}/>',
+            '      </connector>',
+        ])
+        if relation_type in {"association", "aggregation", "composition"}:
+            for side, endpoint_class_id, endpoint_class in (("source", source_id, source), ("target", target_id, target)):
+                endpoint_id = _stable_id("end", f"{rid}:{side}")
+                endpoint_name_value = endpoint_name(relation, side, endpoint_class)
+                endpoint_multiplicity = relation.get(f"{side}_multiplicity")
+                endpoint_aggregation = relation.get(f"{side}_aggregation") or ("composite" if relation_type == "composition" and side == "target" else "shared" if relation_type == "aggregation" and side == "target" else "none")
+                endpoint_multiplicity_xml = f' multiplicity="{xml_value(endpoint_multiplicity)}"' if endpoint_multiplicity else ""
+                lines.extend([
+                    f'      <connector xmi:idref="{endpoint_id}">',
+                    f'        <source xmi:idref="{rid}"><model ea_localid="{ea_local_id("relation", rid)}" type="Association" name="{xml_value(relation.get("label") or "")}"/><role name="{xml_value(endpoint_name_value)}"/><type aggregation="{endpoint_aggregation}"/></source>',
+                    f'        <target xmi:idref="{class_ids[endpoint_class_id]}"><model ea_localid="{ea_local_id("class", endpoint_class_id)}" type="Class" name="{xml_value(endpoint_class.get("name", ""))}"/><role name="{xml_value(endpoint_name_value)}"/><type{endpoint_multiplicity_xml} aggregation="{endpoint_aggregation}"/></target>',
+                    f'        <properties ea_type="Association"/>',
+                    '        <appearance linemode="3" linecolor="-1" linewidth="0"/>',
+                    '      </connector>',
+                ])
     lines.append("    </connectors>")
     diagram_id = _stable_id("diagram", str(diagram.get("id") or title))
     lines.append("    <diagrams>")
-    lines.append(f'      <diagram xmi:id="{diagram_id}" name="{xml_value(title)}" type="Logical"><model package="{package_id}"/>')
+    lines.append(f'      <diagram xmi:id="{diagram_id}">')
+    lines.append(f'        <model package="{package_id}" localID="{xml_value(diagram.get("id") or title)}" owner="{package_id}"/>')
+    lines.append(f'        <properties name="{xml_value(title)}" type="Logical"/>')
     lines.append("        <elements>")
     for index, item in enumerate(classes, 1):
         x, y = int(item.get("x", 80)), int(item.get("y", 80))
-        lines.append(f'          <element geometry="Left={x};Top={y};Right={x + 210};Bottom={y + 120};" subject="{class_ids[str(item.get("id"))]}" seqno="{index}" style="DUID={_stable_id("duid", str(item.get("id")))[5:13]};"/>')
+        width, height = int(item.get("width", 210)), int(item.get("height", 120))
+        lines.append(f'          <element geometry="Left={x};Top={y};Right={x + width};Bottom={y + height};" subject="{class_ids[str(item.get("id"))]}" seqno="{index}" style="DUID={_stable_id("duid", str(item.get("id")))[5:13]};"/>')
+    for relation in valid_relations:
+        source = class_by_id[str(relation.get("source_id"))]
+        target = class_by_id[str(relation.get("target_id"))]
+        source_x, source_y = int(source.get("x", 80)), int(source.get("y", 80))
+        target_x, target_y = int(target.get("x", 80)), int(target.get("y", 80))
+        lines.append(f'          <element geometry="SX={source_x};SY={source_y};EX={target_x};EY={target_y};EDGE=2;" subject="{relation_key(relation)}" style="Mode=3;EOID={_stable_id("duid", str(relation.get("target_id")))[5:13]};SOID={_stable_id("duid", str(relation.get("source_id")))[5:13]};Color=-1;LWidth=0;Hidden=0;"/>')
     lines.append("        </elements>")
     lines.append("      </diagram>")
     lines.append("    </diagrams>")

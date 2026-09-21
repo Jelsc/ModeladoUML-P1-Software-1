@@ -54,12 +54,13 @@ def test_generated_entity_deduplicates_scalar_and_relation_fields():
     files = build_project(diagram)
     orders = files["generated-spring-backend/src/main/java/com/generated/uml/models/orders.java"].decode()
     items = files["generated-spring-backend/src/main/java/com/generated/uml/models/order_items.java"].decode()
-    assert "private Long user_id;" in orders
     assert "private users user_idRef;" in orders
+    assert "private Long user_id;" not in orders
     declarations = re.findall(r"private \S+(?:<[^>]+>)? (\w+);", orders)
     assert len(declarations) == len(set(declarations))
-    assert "private Long order_id;" in items and "private Long product_id;" in items
+    assert "private Long order_id;" not in items
+    assert "private Long product_id;" in items
     assert "private orders order_idRef;" in items
     assert "private List<products> product_idRef;" in items
-    assert 'name = "order_items_products"' in items
+    assert 'name = "order_items_products_product_id_join"' in items
     assert ">" not in items.split('name = "', 1)[1].split('"', 1)[0]

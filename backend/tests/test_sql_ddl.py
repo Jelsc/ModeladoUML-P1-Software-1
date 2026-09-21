@@ -51,7 +51,7 @@ def test_sql_to_uml_infers_relation_and_preserves_existing_metadata():
     assert not warnings
     assert next(c for c in diagram["classes"] if c["name"] == "users")["x"] == 400
     assert diagram["classes"][0]["methods"] or diagram["classes"][1]["methods"]
-    assert diagram["relations"][0]["source_multiplicity"] == "0..*"
+    assert diagram["relations"][0]["source_multiplicity"] == "0..1"
 
 
 def test_uml_to_sql_is_deterministic_and_export_contains_same_schema():
@@ -60,6 +60,40 @@ def test_uml_to_sql_is_deterministic_and_export_contains_same_schema():
     assert sql == generate_ddl(diagram)
     with zipfile.ZipFile(BytesIO(export_zip(diagram))) as archive:
         assert archive.read("generated-spring-backend/src/main/resources/schema.sql").decode() == sql
+
+
+def test_uml_without_explicit_id_uses_numeric_id_matching_generated_java():
+    sql = generate_ddl({"classes": [{"name": "Product", "attributes": []}], "relations": []})
+    assert "id BIGINT PRIMARY KEY" in sql
+
+
+def test_recursive_relations_generate_fk_and_distinct_many_to_many_join_columns():
+    diagram = {
+        "title": "Tree",
+        "classes": [{"id": "node", "name": "Node", "attributes": [{"id": "id", "name": "id", "type": "uuid"}]}],
+        "relations": [
+            {"id": "parent", "source_id": "node", "target_id": "node", "from": "Node", "to": "Node", "type": "composition", "label": "parent"},
+            {"id": "links", "source_id": "node", "target_id": "node", "from": "Node", "to": "Node", "type": "association", "label": "links", "source_multiplicity": "0..*", "target_multiplicity": "0..*"},
+        ],
+    }
+    sql = generate_ddl(diagram)
+    assert "parent UUID" in sql
+    assert "FOREIGN KEY (parent) REFERENCES node (id)" in sql
+    assert "source_id UUID NOT NULL" in sql
+    assert "target_id UUID NOT NULL" in sql
+    assert "PRIMARY KEY (source_id, target_id)" in sql
+    with zipfile.ZipFile(BytesIO(export_zip(diagram))) as archive:
+        entity = archive.read("generated-spring-backend/src/main/java/com/generated/uml/models/Node.java").decode()
+        schema = archive.read("generated-spring-backend/src/main/resources/schema.sql").decode()
+    assert "private Node parent;" in entity
+    assert "private List<Node> links;" in entity
+    declarations = [line.strip() for line in entity.splitlines() if line.strip().startswith("private ")]
+    assert len(declarations) == len(set(declarations))
+    assert '@ManyToOne' in entity and '@JoinColumn(name = "parent", referencedColumnName = "id")' in entity
+    assert '@ManyToMany' in entity
+    assert 'joinColumns = @JoinColumn(name = "source_id")' in entity
+    assert 'inverseJoinColumns = @JoinColumn(name = "target_id")' in entity
+    assert "CREATE TABLE node_node_links_join" in schema
 
 
 def test_apply_path_is_database_free():
