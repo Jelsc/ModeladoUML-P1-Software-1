@@ -137,13 +137,15 @@ def _entity(item, diagram):
                 fields.append((role, f"List<{other}>", "one_to_many", join_column, other, None, relation_names[(source, index)], False))
     owned_columns = relation_owned_columns(diagram).get(item["name"], set())
     scalar_fields = [(field, field_type) for field, field_type in scalar_candidates if field not in owned_columns]
-    lines = [f"package {PACKAGE}.models;", "", "import com.fasterxml.jackson.annotation.JsonProperty;", "import jakarta.persistence.*;", "import java.math.BigDecimal;", "import java.time.*;", "import java.util.*;", "", "@Entity"]
+    lines = [f"package {PACKAGE}.models;", "", "import com.fasterxml.jackson.annotation.JsonIgnore;", "import com.fasterxml.jackson.annotation.JsonProperty;", "import jakarta.persistence.*;", "import java.math.BigDecimal;", "import java.time.*;", "import java.util.*;", "", "@Entity"]
     if inheritance:
         lines.append("@Inheritance(strategy = InheritanceType.JOINED)")
     lines += [f"public class {name}{extends} {{", "    @Id", "    @GeneratedValue(strategy = GenerationType.IDENTITY)", "    private Long id;", ""]
     for field, field_type in scalar_fields:
         lines += [f'    @JsonProperty("{field}")', f"    private {field_type} {field};", ""]
     for role, target, relation_kind, join_column, target_class, relation_suffix, mapped_by, owner in fields:
+        if target.startswith("List<"):
+            lines.append("    @JsonIgnore")
         if relation_kind in {"many_to_many", "self_many_to_many"}:
             join_table = _join_table_name(name, target_class, relation_suffix)
             if relation_kind == "self_many_to_many":

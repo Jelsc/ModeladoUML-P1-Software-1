@@ -32,6 +32,22 @@ def test_one_to_many_uses_target_fk_and_bidirectional_jpa():
     assert "@JoinTable" not in a + b
 
 
+def test_collection_relationships_are_ignored_by_jackson_but_scalars_are_serialized():
+    a, b, _ = entity_files(diagram("0..1", "0..*"))
+    assert "import com.fasterxml.jackson.annotation.JsonIgnore;" in a
+    assert "    @JsonIgnore\n    @OneToMany(mappedBy = \"relation_id\")" in a
+    assert "@JsonIgnore" not in b
+
+    many_to_many_a, many_to_many_b, _ = entity_files(diagram("*", "*"))
+    assert many_to_many_a.count("@JsonIgnore") == 1
+    assert many_to_many_b.count("@JsonIgnore") == 1
+
+    scalar = build_project({"classes": [{"name": "Product", "attributes": [{"name": "sku", "type": "string"}]}], "relations": []})
+    product = scalar["generated-spring-backend/src/main/java/com/generated/uml/models/Product.java"].decode()
+    assert '@JsonProperty("sku")' in product
+    assert "@JsonIgnore" not in product
+
+
 def test_many_to_many_uses_join_table_and_single_jpa_owner():
     a, b, ddl = entity_files(diagram("*", "*"))
     assert "CREATE TABLE a_b_r_join" in ddl
