@@ -18,7 +18,7 @@ DEPLOY_PUBLIC_SCHEME=http
 DEPLOY_PUBLIC_DOMAIN=localhost
 ```
 
-The Vite frontend remains at `http://localhost:8080`. Generated APIs use `http://api-<slug>.localhost` through `deploy-gateway`. Generated databases are on the private Docker network and are only loopback-published for the existing credentials/debugging endpoint.
+The Vite frontend remains at `http://localhost:8080`. Generated APIs use `http://localhost/deployments/<slug>` through `deploy-gateway`. Generated databases are on the private Docker network and are only loopback-published for the existing credentials/debugging endpoint.
 
 ## VM
 
@@ -29,7 +29,7 @@ APP_ENV=prod
 FRONTEND_DOMAIN=app-primerpacialsw.duckdns.org
 API_DOMAIN=api-primerpacialsw.duckdns.org
 DEPLOY_PUBLIC_SCHEME=https
-DEPLOY_PUBLIC_DOMAIN=primerpacialsw.duckdns.org
+DEPLOY_PUBLIC_DOMAIN=api-primerpacialsw.duckdns.org
 CERTBOT_CERT_NAME=app-primerpacialsw.duckdns.org
 ```
 
@@ -48,6 +48,6 @@ docker compose --env-file .env run --rm --entrypoint certbot certbot certonly --
 docker compose --env-file .env --profile production restart deploy-gateway
 ```
 
-Generated URLs are `https://api-<slug>.primerpacialsw.duckdns.org`. DuckDNS does not automatically create arbitrary subdomains or wildcard DNS records. A wildcard record such as `*.primerpacialsw.duckdns.org` must actually be supported and configured to point to the VM, and the certificate stored under `CERTBOT_CERT_NAME` must cover `*.primerpacialsw.duckdns.org` as well as the fixed frontend and API hosts. The HTTP-01 command above only covers the two fixed hosts; wildcard certificates require a DNS-01-capable DNS provider and credentials. If DuckDNS cannot provide the required wildcard DNS/certificate flow, use a controlled DNS zone where it is supported or provision each generated hostname and certificate explicitly. Never expose generated services over plain HTTP in production.
+Generated URLs are `https://api-primerpacialsw.duckdns.org/deployments/<slug>`. Only the fixed `app-primerpacialsw.duckdns.org` and `api-primerpacialsw.duckdns.org` DNS records are required; generated deployments are Nginx paths and do not need per-project or wildcard DNS records. Never expose generated services over plain HTTP in production.
 
 Certbot renewal runs in the `certbot` service. After a successful renewal, reload or restart `deploy-gateway` so Nginx reads the renewed certificate.

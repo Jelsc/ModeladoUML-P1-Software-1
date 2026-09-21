@@ -56,9 +56,10 @@ def test_deployment_ingress_is_environment_configurable_and_databases_are_privat
     env = (ROOT / ".env.example").read_text()
     nginx = (ROOT / "infra/nginx/templates/default.prod.conf.template").read_text()
     assert "DEPLOY_PUBLIC_SCHEME" in config and "DEPLOY_PUBLIC_DOMAIN" in config
-    assert "api-{slug}.{settings.DEPLOY_PUBLIC_DOMAIN}" in worker
+    assert "/deployments/{slug}" in worker
     assert '"--publish", "127.0.0.1::5432"' in worker
     assert "include /etc/nginx/generated/*.conf;" in nginx
+    assert "server_name ${API_DOMAIN};" in (ROOT / "infra/nginx/templates/default.local.conf.template").read_text()
     assert "DEPLOY_PUBLIC_DOMAIN" in env and "APP_ENV=local" in env
 
 
@@ -67,15 +68,16 @@ def test_production_bootstrap_and_certificate_names_are_safe_and_consistent():
     bootstrap = (ROOT / "infra/nginx/templates/default.prod-bootstrap.conf.template").read_text()
     production = (ROOT / "infra/nginx/templates/default.prod.conf.template").read_text()
     compose = COMPOSE
-    assert "include /etc/nginx/generated/*.conf;" not in bootstrap
+    assert "include /etc/nginx/generated/*.conf;" in bootstrap
     assert "include /etc/nginx/generated/*.conf;" in production
     assert "envsubst '$$FRONTEND_DOMAIN $$API_DOMAIN'" in compose
     assert "envsubst '$$FRONTEND_DOMAIN $$API_DOMAIN $$CERTBOT_CERT_NAME'" in compose
     assert "DEPLOY_CERT_NAME" not in compose
     assert "DEPLOY_CERT_NAME" not in (ROOT / "backend/app/config.py").read_text()
-    assert "CERTBOT_CERT_NAME" in (ROOT / "backend/app/deployment.py").read_text()
+    assert "CERTBOT_CERT_NAME" in production
     assert "server_name ${API_DOMAIN};" in production
     assert "proxy_pass http://backend:8000;" in production
+    assert production.index("server_name ${API_DOMAIN};") < production.index("include /etc/nginx/generated/*.conf;")
     assert '"--publish", "127.0.0.1::5432"' in (ROOT / "backend/app/deployment.py").read_text()
 
 

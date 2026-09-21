@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 import app.deployment as deployment_worker
 import app.main as main_module
 from app.db import get_db
-from app.deployment import DockerCommandError
+from app.deployment import DockerCommandError, _gateway_config, deployment_url
 from app.deployment_credentials import derive_database_identity, parse_database_runtime, parse_loopback_port, redact_diagnostic
 from app.security import current_user
 from exporters.project_builder import build_project
@@ -24,6 +24,22 @@ def test_credentials_are_stable_strong_and_scoped():
     assert username.startswith("uml_") and len(username) == 20
     assert len(password) == 43
     assert "test-only-secret" not in password
+
+
+def test_deployment_url_uses_fixed_gateway_path(monkeypatch):
+    monkeypatch.setattr(deployment_worker.settings, "DEPLOY_PUBLIC_SCHEME", "https")
+    monkeypatch.setattr(deployment_worker.settings, "DEPLOY_PUBLIC_DOMAIN", "api-primerpacialsw.duckdns.org")
+    monkeypatch.setattr(deployment_worker.settings, "DEPLOY_GATEWAY_HTTPS_PORT", 443)
+    assert deployment_url("gymnasio-f3d823e4") == "https://api-primerpacialsw.duckdns.org/deployments/gymnasio-f3d823e4"
+
+
+def test_generated_gateway_route_is_path_based_and_strips_prefix():
+    route = _gateway_config("gymnasio-f3d823e4", "uml-generated-gymnasio-f3d823e4")
+    assert "server {" not in route
+    assert "location = /deployments/gymnasio-f3d823e4" in route
+    assert "return 301 /deployments/gymnasio-f3d823e4/;" in route
+    assert "location /deployments/gymnasio-f3d823e4/" in route
+    assert "proxy_pass http://uml-generated-gymnasio-f3d823e4:8080/;" in route
 
 
 @pytest.mark.parametrize("payload", [

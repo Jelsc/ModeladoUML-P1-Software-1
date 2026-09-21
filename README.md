@@ -51,13 +51,13 @@ The API requires JWT authentication for diagrams and exports. WebSockets use the
 During collaborative editing, cursor and class movement events are coalesced latest-only per stream and sent at a stable 16 ms interval, approximately 60 Hz. Rendering remains bounded by `requestAnimationFrame`, and class positions are persisted only on pointer release. The higher event rate reduces perceived motion latency, but can use more network traffic and CPU when many collaborators are active.
 # Despliegue local de backends
 
-Además de `Exportar ZIP`, el propietario de un diagrama puede usar `Desplegar` en la barra superior. El sistema genera el backend Spring Boot actual, construye una imagen fija, crea un PostgreSQL exclusivo y publica la API mediante el gateway Nginx en una URL como `http://api-inventario-1234abcd.localhost`.
+Además de `Exportar ZIP`, el propietario de un diagrama puede usar `Desplegar` en la barra superior. El sistema genera el backend Spring Boot actual, construye una imagen fija, crea un PostgreSQL exclusivo y publica la API mediante el gateway Nginx en una URL como `http://localhost/deployments/inventario-1234abcd`.
 
 ## Gateway y aislamiento
 
 El servicio `deploy-gateway` es Nginx independiente del Nginx del perfil frontend de producción. Escucha `DEPLOY_GATEWAY_PORT` (80 por defecto) y comparte una configuración administrada por el backend. Las aplicaciones generadas escuchan internamente en 8080 sin publicar ese puerto y se conectan a la red `uml-generated`. Cada despliegue tiene su propio PostgreSQL y volumen de datos; PostgreSQL publica un puerto asignado por Docker exclusivamente en `127.0.0.1`, nunca en todas las interfaces del host.
 
-Si el puerto 80 está ocupado, configure `DEPLOY_GATEWAY_PORT=8088` y la URL devuelta incluirá `:8088`. En Windows, `*.localhost` suele resolver en navegadores actuales; si no lo hace, agregue el host `127.0.0.1 api-<slug>.localhost` al archivo hosts o use `http://localhost:8088` solo como fallback si se configura un proxy equivalente.
+Si el puerto 80 está ocupado, configure `DEPLOY_GATEWAY_PORT=8088` y la URL devuelta incluirá `:8088`; la ruta continúa siendo `/deployments/<slug>` en el host fijo.
 
 ## Seguridad y alcance
 

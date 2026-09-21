@@ -1,12 +1,14 @@
 server {
     listen 80 default_server;
-    server_name _;
+    server_name ${API_DOMAIN};
 
     location ~ (^|/)\. {
         return 404;
     }
 
-    return 404;
-}
+    include /etc/nginx/generated/*.conf;
 
-include /etc/nginx/generated/*.conf;
+    location / {
+        return 404;
+    }
+}

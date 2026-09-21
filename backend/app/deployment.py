@@ -137,14 +137,19 @@ def cleanup(deployment: Deployment):
             pass
 
 
+def deployment_url(slug):
+    if not SAFE_SLUG.fullmatch(slug):
+        raise ValueError("URL de despliegue inválida")
+    gateway_port = settings.DEPLOY_GATEWAY_HTTPS_PORT if settings.DEPLOY_PUBLIC_SCHEME == "https" else settings.DEPLOY_GATEWAY_PORT
+    port = "" if gateway_port in (80, 443) else f":{gateway_port}"
+    return f"{settings.DEPLOY_PUBLIC_SCHEME}://{settings.DEPLOY_PUBLIC_DOMAIN.rstrip('/')}{port}/deployments/{slug}"
+
+
 def _gateway_config(slug, container_name):
     if not SAFE_SLUG.fullmatch(slug) or not SAFE_NAME.fullmatch(container_name):
         raise ValueError("Ruta de gateway inválida")
-    host = f"api-{slug}.{settings.DEPLOY_PUBLIC_DOMAIN}"
-    proxy = f"server {{\n    listen 80;\n    server_name {host};\n    location / {{\n        proxy_pass http://{container_name}:8080;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $connection_upgrade;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }}\n}}\n"
-    if settings.APP_ENV.lower() in {"prod", "production", "vm"}:
-        proxy += f"server {{\n    listen 443 ssl;\n    server_name {host};\n    ssl_certificate /etc/letsencrypt/live/{settings.CERTBOT_CERT_NAME}/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/{settings.CERTBOT_CERT_NAME}/privkey.pem;\n    location / {{\n        proxy_pass http://{container_name}:8080;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection $connection_upgrade;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }}\n}}\n"
-    return proxy
+    prefix = f"/deployments/{slug}"
+    return f"location = {prefix} {{\n    return 301 {prefix}/;\n}}\n\nlocation {prefix}/ {{\n    proxy_pass http://{container_name}:8080/;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection $connection_upgrade;\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n}}\n"
 
 
 def write_route(slug, container_name):
@@ -239,9 +244,7 @@ def deploy(deployment_id):
         _wait_healthy(container, timeout=180)
         write_route(slug, container)
         deployment.status = "running"
-        gateway_port = settings.DEPLOY_GATEWAY_HTTPS_PORT if settings.DEPLOY_PUBLIC_SCHEME == "https" else settings.DEPLOY_GATEWAY_PORT
-        port = "" if gateway_port in (80, 443) else f":{gateway_port}"
-        deployment.url = f"{settings.DEPLOY_PUBLIC_SCHEME}://api-{slug}.{settings.DEPLOY_PUBLIC_DOMAIN}{port}"
+        deployment.url = deployment_url(slug)
         deployment.updated_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as exc:

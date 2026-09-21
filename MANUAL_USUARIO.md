@@ -145,7 +145,7 @@ El MVP soporta diagramas de clases: nombre de clase, atributos tipados, métodos
 
 Desde una pizarra propia, seleccione **Desplegar** en la navegación superior. El panel muestra `queued`, `building`, `starting`, `running`, `failed` o `stopped`. Use **Desplegar / reconstruir** para generar nuevamente el proyecto Spring Boot, **Abrir API** para abrir la URL en otra pestaña y **Detener** para retirar el contenedor y su ruta. La exportación ZIP continúa disponible.
 
-La URL tiene el formato `http://api-<slug>.localhost` (por ejemplo, `http://api-inventario-1234abcd.localhost`). Si el puerto 80 no está disponible, defina `DEPLOY_GATEWAY_PORT=8088` en `.env`; la URL incluirá ese puerto. En Windows puede ser necesario agregar `127.0.0.1 api-<slug>.localhost` al archivo `hosts`. El gateway es el servicio Nginx `deploy-gateway`, distinto del Nginx frontend de producción.
+La URL tiene el formato `http://localhost/deployments/<slug>` (por ejemplo, `http://localhost/deployments/inventario-1234abcd`). Si el puerto 80 no está disponible, defina `DEPLOY_GATEWAY_PORT=8088` en `.env`; la URL incluirá ese puerto. El gateway es el servicio Nginx `deploy-gateway`, distinto del Nginx frontend de producción.
 
 Cada backend generado se ejecuta en la red Docker `uml-generated`, con PostgreSQL y volumen propios. No usa la base PostgreSQL ni Redis de la aplicación principal. Los backends no publican puertos del host: Nginx es el único acceso local.
 
@@ -204,4 +204,4 @@ El backend generado es la autoridad. `GET /uap/v1/sync/changes?since=<cursor>` d
 
 La reconexión automática escucha cambios de `connectivity_plus` y el resume de la aplicación, pero siempre verifica con una solicitud real de descubrimiento UAP. Usa backoff acotado de 1, 2, 5, 10 y 30 segundos, una sola sincronización concurrente y como máximo cinco intentos por evento. Solo mantiene un timer de dos minutos en primer plano si hay operaciones pendientes. WebSocket no es necesario para la consistencia offline; podría usarse en el futuro únicamente para avisar que conviene despertar este mismo flujo. **Sincronizar ahora** permanece como fallback manual.
 
-USB exacto: en la PC ejecutá `adb reverse tcp:8080 tcp:80`; en el teléfono dejá `http://127.0.0.1:8080` y el `Host` `api-<slug>.localhost`. El socket del teléfono llega por USB al gateway de la PC y el Host selecciona la ruta Nginx. No es una conexión cloud ni cambia el almacenamiento SQLite local.
+USB exacto: en la PC ejecutá `adb reverse tcp:8080 tcp:80`; en el teléfono usá `http://127.0.0.1:8080/deployments/<slug>`. El socket del teléfono llega por USB al gateway de la PC y la ruta selecciona el despliegue. No es una conexión cloud ni cambia el almacenamiento SQLite local.
