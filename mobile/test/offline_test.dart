@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as path;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:universal_uap_client/assistant/context_broker.dart';
 import 'package:universal_uap_client/offline/database.dart';
@@ -46,6 +49,39 @@ void main() {
     expect(
       (await repository.pendingOperations()).map((item) => item.operationId),
       ['op-1'],
+    );
+  });
+
+  test('resets only the named app database and recreates its schema', () async {
+    final directory = await Directory.systemTemp.createTemp('uap-db-test-');
+    final databasePath = path.join(directory.path, offlineDatabaseFileName);
+    final first = await openOfflineDatabase(
+      databasePath: databasePath,
+      factory: databaseFactoryFfi,
+    );
+    final firstRepository = OfflineRepository(first);
+    await firstRepository.upsert(
+      entity: 'User',
+      recordId: 'cached',
+      data: {'name': 'Ana'},
+    );
+    final second = await resetOfflineDatabase(
+      currentDatabase: first,
+      databasePath: databasePath,
+      factory: databaseFactoryFfi,
+    );
+    expect(await OfflineRepository(second).summaries(), isEmpty);
+    await second.close();
+    await directory.delete(recursive: true);
+  });
+
+  test('rejects paths that are not the app database filename', () async {
+    expect(
+      () => openOfflineDatabase(
+        databasePath: path.join(Directory.systemTemp.path, 'other.db'),
+        factory: databaseFactoryFfi,
+      ),
+      throwsArgumentError,
     );
   });
 
@@ -286,19 +322,38 @@ void main() {
     expect(transport.pushed, ['op-single-flight']);
   });
 
-  test('new backend generation clears remote cache but preserves pending data', () async {
-    await repository.upsert(entity: 'User', recordId: 'old', data: {'name': 'Old'});
-    await repository.applyLocalMutation(entity: 'User', recordId: 'pending', operation: 'create', payload: {'name': 'Keep'});
-    await repository.saveBackendGeneration('old-generation');
-    await SyncEngine(repository, _ResetTransport()).sync();
-    expect(await repository.read('User', 'old'), isNull);
-    expect((await repository.read('User', 'pending'))?.syncState, SyncState.conflict);
-    expect(await repository.pendingOperations(), isEmpty);
-    expect(await repository.cursor(), '0');
-  });
+  test(
+    'new backend generation clears remote cache but preserves pending data',
+    () async {
+      await repository.upsert(
+        entity: 'User',
+        recordId: 'old',
+        data: {'name': 'Old'},
+      );
+      await repository.applyLocalMutation(
+        entity: 'User',
+        recordId: 'pending',
+        operation: 'create',
+        payload: {'name': 'Keep'},
+      );
+      await repository.saveBackendGeneration('old-generation');
+      await SyncEngine(repository, _ResetTransport()).sync();
+      expect(await repository.read('User', 'old'), isNull);
+      expect(
+        (await repository.read('User', 'pending'))?.syncState,
+        SyncState.conflict,
+      );
+      expect(await repository.pendingOperations(), isEmpty);
+      expect(await repository.cursor(), '0');
+    },
+  );
 
   test('same backend generation keeps cache and cursor', () async {
-    await repository.upsert(entity: 'User', recordId: 'same', data: {'name': 'Keep'});
+    await repository.upsert(
+      entity: 'User',
+      recordId: 'same',
+      data: {'name': 'Keep'},
+    );
     await repository.saveBackendGeneration('same-generation');
     await repository.saveCursor('7');
     await SyncEngine(repository, _SameTransport()).sync();
@@ -360,7 +415,9 @@ void main() {
 class _FakeTransport implements SyncTransport {
   final pushed = <String>[];
   @override
-  Future<Map<String, dynamic>> state() async => {'generation': 'test-generation'};
+  Future<Map<String, dynamic>> state() async => {
+    'generation': 'test-generation',
+  };
   @override
   Future<Map<String, dynamic>> pull(String cursor) async => {
     'cursor': '2',
@@ -405,7 +462,9 @@ class _MappingTransport implements SyncTransport {
   final String serverId;
   int pushCount = 0;
   @override
-  Future<Map<String, dynamic>> state() async => {'generation': 'test-generation'};
+  Future<Map<String, dynamic>> state() async => {
+    'generation': 'test-generation',
+  };
   @override
   Future<Map<String, dynamic>> pull(String cursor) async => {
     'cursor': cursor,
@@ -447,18 +506,30 @@ class _MappingTransport implements SyncTransport {
 
 class _ResetTransport implements SyncTransport {
   @override
-  Future<Map<String, dynamic>> state() async => {'generation': 'new-generation'};
+  Future<Map<String, dynamic>> state() async => {
+    'generation': 'new-generation',
+  };
   @override
-  Future<Map<String, dynamic>> pull(String cursor) async => {'cursor': '0', 'changes': []};
+  Future<Map<String, dynamic>> pull(String cursor) async => {
+    'cursor': '0',
+    'changes': [],
+  };
   @override
-  Future<List<PushResult>> push(List<OutboxOperation> operations) async => const [];
+  Future<List<PushResult>> push(List<OutboxOperation> operations) async =>
+      const [];
 }
 
 class _SameTransport implements SyncTransport {
   @override
-  Future<Map<String, dynamic>> state() async => {'generation': 'same-generation'};
+  Future<Map<String, dynamic>> state() async => {
+    'generation': 'same-generation',
+  };
   @override
-  Future<Map<String, dynamic>> pull(String cursor) async => {'cursor': cursor, 'changes': []};
+  Future<Map<String, dynamic>> pull(String cursor) async => {
+    'cursor': cursor,
+    'changes': [],
+  };
   @override
-  Future<List<PushResult>> push(List<OutboxOperation> operations) async => const [];
+  Future<List<PushResult>> push(List<OutboxOperation> operations) async =>
+      const [];
 }

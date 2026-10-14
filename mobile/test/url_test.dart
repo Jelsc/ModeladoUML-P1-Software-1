@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_uap_client/config/api_config.dart';
+import 'package:universal_uap_client/config/backend_preferences.dart';
 import 'package:universal_uap_client/core/url.dart';
 import 'package:universal_uap_client/uap/client.dart';
 import 'package:universal_uap_client/uap/models.dart';
@@ -10,6 +12,19 @@ void main() {
   test('normalizes scheme and trailing slash', () {
     expect(normalizeBaseUrl(' example.test/// '), 'http://example.test');
     expect(normalizeBaseUrl('https://example.test/'), 'https://example.test');
+  });
+  test('persists, restores and clears a normalized backend override', () async {
+    SharedPreferences.setMockInitialValues({});
+    await saveBackendUrlOverride(' https://production.example/// ');
+    expect(await resolveBackendUrl(), 'https://production.example');
+
+    SharedPreferences.setMockInitialValues({
+      backendUrlOverrideKey: 'https://production.example',
+    });
+    expect(await resolveBackendUrl(), 'https://production.example');
+
+    await clearBackendUrlOverride();
+    expect(await resolveBackendUrl(), normalizeBaseUrl(activeBackendUrl));
   });
   test(
     'rejects empty URL',
@@ -36,7 +51,7 @@ void main() {
         }),
       );
 
-      await client.discover();
+      await client.discover(usbTestBackendUrl);
 
       expect(requests, hasLength(5));
       expect(
@@ -69,6 +84,7 @@ void main() {
       'confirmationRequired': false,
     });
 
+    client.baseUrl = normalizeBaseUrl(usbTestBackendUrl);
     await client.invoke(tool, const {}, confirmed: true);
 
     expect(request.headers['host'], backendHostHeader);

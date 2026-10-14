@@ -2,14 +2,35 @@ import 'package:path/path.dart' as path;
 import 'package:sqflite/sqflite.dart';
 
 const databaseVersion = 3;
+const offlineDatabaseFileName = 'uap_offline.db';
+
+Future<String> offlineDatabasePath({
+  String? databasePath,
+  bool allowInMemory = false,
+}) async {
+  final file =
+      databasePath ??
+      path.join(await getDatabasesPath(), offlineDatabaseFileName);
+  if (!(allowInMemory && file == inMemoryDatabasePath) &&
+      path.basename(file) != offlineDatabaseFileName) {
+    throw ArgumentError.value(
+      file,
+      'databasePath',
+      'Only the app database $offlineDatabaseFileName may be used.',
+    );
+  }
+  return file;
+}
 
 Future<Database> openOfflineDatabase({
   String? databasePath,
   DatabaseFactory? factory,
 }) async {
   final selectedFactory = factory ?? databaseFactory;
-  final file =
-      databasePath ?? path.join(await getDatabasesPath(), 'uap_offline.db');
+  final file = await offlineDatabasePath(
+    databasePath: databasePath,
+    allowInMemory: true,
+  );
   return selectedFactory.openDatabase(
     file,
     options: OpenDatabaseOptions(
@@ -22,6 +43,18 @@ Future<Database> openOfflineDatabase({
       },
     ),
   );
+}
+
+Future<Database> resetOfflineDatabase({
+  Database? currentDatabase,
+  String? databasePath,
+  DatabaseFactory? factory,
+}) async {
+  final file = await offlineDatabasePath(databasePath: databasePath);
+  final selectedFactory = factory ?? databaseFactory;
+  if (currentDatabase != null) await currentDatabase.close();
+  await selectedFactory.deleteDatabase(file);
+  return openOfflineDatabase(databasePath: file, factory: selectedFactory);
 }
 
 Future<void> _createSchema(Database db) async {

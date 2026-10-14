@@ -36,6 +36,9 @@ dependencies:
   sqflite: ^2.4.2
   path: ^1.9.1
   connectivity_plus: ^6.1.4
+  path_provider: ^2.1.5
+  record: ^6.2.1
+  sherpa_onnx: ^1.13.8
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -66,6 +69,7 @@ flutter:
 
   assets:
     - assets/models/assistant.gguf
+    - assets/speech/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

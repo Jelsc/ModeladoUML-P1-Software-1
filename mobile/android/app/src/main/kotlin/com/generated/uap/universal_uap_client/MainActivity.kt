@@ -1,13 +1,7 @@
 package com.generated.uap.universal_uap_client
 
 import android.content.Intent
-import android.Manifest
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -19,11 +13,8 @@ import java.util.Locale
 
 class MainActivity : FlutterActivity() {
     private val channel = "uap/model_picker"
-    private val voiceChannel = "uap/offline_voice"
     private val ttsChannel = "uap/text_to_speech"
     private var pendingResult: MethodChannel.Result? = null
-    private var pendingVoiceResult: MethodChannel.Result? = null
-    private var recognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
 
@@ -46,14 +37,6 @@ class MainActivity : FlutterActivity() {
                             result.error("BUNDLED_MODEL_COPY_FAILED", error.message, null)
                         }
                     }
-                    else -> result.notImplemented()
-                }
-            }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, voiceChannel)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "isAvailable" -> result.success(SpeechRecognizer.isRecognitionAvailable(this))
-                    "listenOnce" -> listenOnce(result)
                     else -> result.notImplemented()
                 }
             }
@@ -86,75 +69,7 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    private fun listenOnce(result: MethodChannel.Result) {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            result.error("VOICE_UNAVAILABLE", "No Android speech service is installed. You can keep using text input.", null)
-            return
-        }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            pendingVoiceResult = result
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 43)
-            return
-        }
-        startRecognition(result)
-    }
-
-    private fun startRecognition(result: MethodChannel.Result) {
-        pendingVoiceResult = result
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { speech ->
-            speech.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) = Unit
-                override fun onBeginningOfSpeech() = Unit
-                override fun onRmsChanged(rmsdB: Float) = Unit
-                override fun onBufferReceived(buffer: ByteArray?) = Unit
-                override fun onEndOfSpeech() = Unit
-                override fun onPartialResults(partialResults: Bundle?) = Unit
-                override fun onEvent(eventType: Int, params: Bundle?) = Unit
-                override fun onError(error: Int) {
-                    finishVoiceError("Speech recognition failed (code $error). Check the Android speech service and try again.")
-                }
-                override fun onResults(results: Bundle?) {
-                    val values = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    val transcript = values?.firstOrNull()?.trim()
-                    if (transcript.isNullOrEmpty()) finishVoiceError("No speech was recognized. You can type the request instead.")
-                    else finishVoice(transcript)
-                }
-            })
-            speech.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            })
-        }
-    }
-
-    private fun finishVoice(value: String) {
-        pendingVoiceResult?.success(value)
-        pendingVoiceResult = null
-        recognizer?.destroy()
-        recognizer = null
-    }
-
-    private fun finishVoiceError(message: String) {
-        pendingVoiceResult?.error("VOICE_ERROR", message, null)
-        pendingVoiceResult = null
-        recognizer?.destroy()
-        recognizer = null
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != 43) return
-        val result = pendingVoiceResult ?: return
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startRecognition(result)
-        else finishVoiceError("Microphone permission was denied. You can keep using text input.")
-    }
-
     override fun onDestroy() {
-        recognizer?.destroy()
-        recognizer = null
         textToSpeech?.stop()
         textToSpeech?.shutdown()
         textToSpeech = null

@@ -259,8 +259,10 @@ class UapCommandParser {
     return {};
   }
 
-  static bool _hasWord(String value, String word) =>
-      RegExp(r'(^|\s)' + RegExp.escape(word) + r'($|\s)').hasMatch(value);
+  static bool _hasWord(String value, String word) => RegExp(
+    r'(?<![A-Za-z0-9_@-])' + RegExp.escape(word) +
+        r'(?![A-Za-z0-9_@-])',
+  ).hasMatch(value);
 
   static bool _mentionsEntity(String request, String entity) {
     final normalizedEntity = _normalize(entity);

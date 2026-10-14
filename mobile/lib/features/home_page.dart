@@ -6,6 +6,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../assistant/orchestrator.dart';
 import '../config/api_config.dart';
+import '../config/backend_preferences.dart';
 import '../core/url.dart';
 import '../local_llm/engine.dart';
 import '../local_llm/model_manager.dart';
@@ -40,7 +41,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _client = UapClient();
   final _models = ModelManager();
   final _engine = AndroidLlamaCppEngine();
-  final _voice = const OfflineVoice();
+  final OfflineAsrEngine _voice = SherpaOfflineAsrEngine();
   final SpeechOutput _speech = AndroidSpeechOutput();
   UapSnapshot? _snapshot;
   String? _modelPath;
@@ -65,11 +66,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((_) => _scheduleReconnect());
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
+      (_) => _scheduleReconnect(),
+    );
     _restore();
   }
 
   Future<void> _restore() async {
+    final effectiveUrl = await resolveBackendUrl();
+    _client.baseUrl = effectiveUrl;
     try {
       final database = await openOfflineDatabase();
       _repository = OfflineRepository(database);
@@ -86,8 +91,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       );
       final cachedSync = await _repository!.lastSyncAt();
-      if (_snapshot != null) _syncLabel = cachedSync == null ? 'Usando datos locales' : 'Usando datos locales · ${_formatTime(cachedSync)}';
-      if ((await _repository!.pendingOperations()).isNotEmpty) _startPendingTimer();
+      if (_snapshot != null)
+        _syncLabel = cachedSync == null
+            ? 'Usando datos locales'
+            : 'Usando datos locales · ${_formatTime(cachedSync)}';
+      if ((await _repository!.pendingOperations()).isNotEmpty)
+        _startPendingTimer();
     } catch (_) {
       _repository = null;
     }
@@ -101,7 +110,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
     if (!mounted) return;
     setState(() {
-      _url.text = activeBackendUrl;
+      _url.text = effectiveUrl;
       _modelPath = modelPath;
       _modelInstallError = modelInstallError;
     });
@@ -111,7 +120,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _connect() async {
+  Future<void> _connect({bool persistOverride = true}) async {
     setState(() {
       _busy = true;
       _error = null;
@@ -120,6 +129,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final normalized = normalizeBaseUrl(
         _url.text.trim().isEmpty ? activeBackendUrl : _url.text,
       );
+      if (persistOverride) await saveBackendUrlOverride(normalized);
       final snapshot = await _client.discover(normalized);
       await _repository?.saveSnapshot(snapshot);
       await _repository?.saveBackendStatus('online');
@@ -145,13 +155,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await _syncNow(automatic: true);
     } catch (error) {
       await _repository?.saveBackendStatus('offline');
-      if (mounted) setState(() {
-        _backendStatus = 'offline';
-        _syncLabel = _snapshot == null ? 'Backend desconectado' : 'Usando datos locales';
-        _error = _snapshot == null
-            ? 'No hay un contrato UAP en caché. Conectate una vez para habilitar el CRUD offline; el asistente local sigue disponible para consultas generales.'
-            : 'Backend desconectado. Usando datos locales.';
-      });
+      if (mounted)
+        setState(() {
+          _backendStatus = 'offline';
+          _syncLabel = _snapshot == null
+              ? 'Backend desconectado'
+              : 'Usando datos locales';
+          _error = _snapshot == null
+              ? 'No hay un contrato UAP en caché. Conectate una vez para habilitar el CRUD offline; el asistente local sigue disponible para consultas generales.'
+              : 'Backend desconectado. Usando datos locales.';
+        });
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -185,7 +198,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted) setState(() => _syncLabel = 'Interpretando');
       final raw = await _engine.generate(
         PromptBuilder.build(
-           snapshot,
+          snapshot,
           request,
           localRecords: localRecords,
           syncStatus: _syncLabel,
@@ -194,9 +207,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted) setState(() => _syncLabel = 'Validando');
       final intent = IntentValidator.parse(
         raw,
-         snapshot.toolList,
+        snapshot.toolList,
         request: request,
-         schema: snapshot.schema,
+        schema: snapshot.schema,
       );
       if (!intent.isToolCall) {
         final text = intent.text!;
@@ -217,25 +230,35 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       try {
         final operation = UapValidator.operation(tool);
         final entity = UapValidator.entity(tool);
-        if (_backendStatus != 'online' && (operation == 'list' || operation == 'get')) {
-          if (_repository == null) throw StateError('No hay almacenamiento local disponible.');
+        if (_backendStatus != 'online' &&
+            (operation == 'list' || operation == 'get')) {
+          if (_repository == null)
+            throw StateError('No hay almacenamiento local disponible.');
           final Map<String, dynamic> result;
           if (operation == 'get') {
-            final record = await _repository!.read(entity, intent.input['id'].toString());
+            final record = await _repository!.read(
+              entity,
+              intent.input['id'].toString(),
+            );
             result = {'data': record?.data};
           } else {
-            final records = (await _repository!.summaries(entity: entity)).where((record) => record.deletedAt == null).toList();
+            final records = (await _repository!.summaries(
+              entity: entity,
+            )).where((record) => record.deletedAt == null).toList();
             result = {'data': records.map((record) => record.data).toList()};
           }
-          final text = '${AssistantResultFormatter.read(tool, result)} Datos locales${await _lastSyncSuffix()}.';
+          final text =
+              '${AssistantResultFormatter.read(tool, result)} Datos locales${await _lastSyncSuffix()}.';
           setState(() => _messages.add(_Message('Asistente', text)));
           await _speakIfAlexa(text);
           return;
         }
         if (_backendStatus != 'online' && tool.isWrite) {
-          if (_repository == null) throw StateError('No hay almacenamiento local disponible.');
+          if (_repository == null)
+            throw StateError('No hay almacenamiento local disponible.');
           await _queueOfflineMutation(tool, intent.input);
-          const text = 'El backend está desconectado. El cambio se guardó en datos locales y quedó pendiente de sincronización.';
+          const text =
+              'El backend está desconectado. El cambio se guardó en datos locales y quedó pendiente de sincronización.';
           setState(() => _messages.add(const _Message('Asistente', text)));
           await _speakIfAlexa(text);
           return;
@@ -286,14 +309,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (operation == 'list' || operation == 'get') {
             final Map<String, dynamic> result;
             if (operation == 'get') {
-              final record = await _repository!.read(UapValidator.entity(tool), intent.input['id'].toString());
+              final record = await _repository!.read(
+                UapValidator.entity(tool),
+                intent.input['id'].toString(),
+              );
               result = {'data': record?.data};
             } else {
-              final records = (await _repository!.summaries(entity: UapValidator.entity(tool))).where((record) => record.deletedAt == null).toList();
+              final records = (await _repository!.summaries(
+                entity: UapValidator.entity(tool),
+              )).where((record) => record.deletedAt == null).toList();
               result = {'data': records.map((record) => record.data).toList()};
             }
-            final text = '${AssistantResultFormatter.read(tool, result)} Datos locales${await _lastSyncSuffix()}.';
-            if (mounted) setState(() => _messages.add(_Message('Asistente', text)));
+            final text =
+                '${AssistantResultFormatter.read(tool, result)} Datos locales${await _lastSyncSuffix()}.';
+            if (mounted)
+              setState(() => _messages.add(_Message('Asistente', text)));
             await _speakIfAlexa(text);
             return;
           }
@@ -330,6 +360,93 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       ) ??
       false;
+
+  Future<bool> _confirmDatabaseDeletion() async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Borrar base local SQLite'),
+          content: const Text(
+            'Se eliminarán todos los registros en caché, incluido el snapshot UAP.\n\n'
+            'También se borrarán las operaciones pendientes, fallidas y en conflicto; '
+            'no podrán sincronizarse.\n\n'
+            'La URL del backend configurado NO se eliminará.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Borrar base local'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  Future<void> _deleteLocalDatabase() async {
+    if (_busy) return;
+    final confirmed = await _confirmDatabaseDeletion();
+    if (!confirmed || !mounted || _busy) return;
+    Navigator.of(context).pop();
+    setState(() {
+      _busy = true;
+      _error = null;
+      _snapshot = null;
+      _backendStatus = 'offline';
+      _syncLabel = 'Base local borrada; reconectando...';
+      _retryAttempt = 0;
+    });
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _pendingTimer?.cancel();
+    _pendingTimer = null;
+    final oldEngine = _syncEngine;
+    final oldDatabase = _repository?.db;
+    _syncEngine = null;
+    _repository = null;
+    try {
+      await oldEngine?.waitForIdle();
+      final database = await resetOfflineDatabase(currentDatabase: oldDatabase);
+      _repository = OfflineRepository(database);
+      _syncEngine = SyncEngine(
+        _repository!,
+        HttpSyncTransport(
+          _client.baseUrl,
+          headers: {
+            if (hostHeaderFor(_client.baseUrl) != null)
+              'host': hostHeaderFor(_client.baseUrl)!,
+          },
+        ),
+      );
+      await _connect(persistOverride: false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Base local SQLite borrada correctamente.'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = 'No se pudo borrar la base local SQLite: ${_clean(error)}';
+          _syncLabel = 'Base local no disponible';
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_error!)));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   String _clean(Object error) =>
       error.toString().replaceFirst('Exception: ', '');
 
@@ -381,17 +498,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
     child: Row(
       children: [
-        Icon(_backendStatus == 'online' ? Icons.cloud_done : Icons.cloud_off, size: 16),
+        Icon(
+          _backendStatus == 'online' ? Icons.cloud_done : Icons.cloud_off,
+          size: 16,
+        ),
         const SizedBox(width: 8),
         Expanded(
-          child: Text(
-             _backendLabel,
-            style: Theme.of(context).textTheme.labelLarge,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _backendLabel,
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              Text(_syncLabel, style: Theme.of(context).textTheme.labelSmall),
+            ],
           ),
         ),
-        Text(_syncLabel, style: Theme.of(context).textTheme.labelSmall),
-        const SizedBox(width: 8),
-        Text(_modelStatusLabel, style: Theme.of(context).textTheme.labelSmall),
+        Flexible(
+          child: Text(
+            _modelStatusLabel,
+            textAlign: TextAlign.end,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+        ),
       ],
     ),
   );
@@ -552,11 +684,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   );
   Future<void> _openComposer() async {
     try {
+      if (_listening) {
+        await _voice.stop();
+        return;
+      }
       if (!await _voice.isAvailable) {
         if (mounted)
           setState(
             () => _error =
-                'El reconocimiento de voz de Android no está disponible. Instalá o habilitá un servicio de voz.',
+                'El reconocimiento local Sherpa-ONNX no está disponible. Reinstalá la aplicación para recuperar sus modelos.',
           );
         return;
       }
@@ -642,9 +778,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        await clearBackendUrlOverride();
+                        if (!mounted) return;
+                        _url.text = normalizeBaseUrl(activeBackendUrl);
+                        Navigator.pop(context);
+                        await _connect(persistOverride: false);
+                      },
+                icon: const Icon(Icons.restart_alt),
+                label: const Text('Restablecer URL compilada'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
                 onPressed: _syncEngine == null || _busy ? null : _syncNow,
                 icon: const Icon(Icons.sync),
                 label: const Text('Sincronizar ahora'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _deleteLocalDatabase,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Theme.of(context).colorScheme.error,
+                ),
+                icon: const Icon(Icons.delete_forever_outlined),
+                label: const Text('Borrar base local SQLite'),
               ),
               const Divider(height: 32),
               Text(
@@ -707,7 +866,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       recordId: id,
       data: data,
       state: SyncState.synced,
-      deletedAt: UapValidator.operation(tool) == 'delete' ? DateTime.now() : null,
+      deletedAt: UapValidator.operation(tool) == 'delete'
+          ? DateTime.now()
+          : null,
     );
     if (mounted) setState(() => _syncLabel = 'Sincronizado');
   }
@@ -717,9 +878,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     Map<String, dynamic> input,
   ) async {
     final entity = tool.raw['entity']?.toString() ?? tool.id.split('.').first;
-    final id =
-        input['id']?.toString() ??
-        _localUuid();
+    final id = input['id']?.toString() ?? _localUuid();
     final operation = UapValidator.operation(tool).isEmpty
         ? tool.id.split('.').last
         : UapValidator.operation(tool);
@@ -762,7 +921,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String get _backendLabel => _backendStatus == 'online'
       ? 'Backend conectado'
-      : _snapshot == null ? 'Backend desconectado' : 'Backend desconectado · usando datos locales';
+      : _snapshot == null
+      ? 'Backend desconectado'
+      : 'Backend desconectado · usando datos locales';
 
   void _scheduleReconnect() {
     if (_retryAttempt >= 5 || _retryTimer?.isActive == true) return;
@@ -776,8 +937,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _startPendingTimer() {
     _pendingTimer ??= Timer.periodic(const Duration(minutes: 2), (_) {
-      if (_backendStatus != 'online') _scheduleReconnect();
-      else _syncNow(automatic: true);
+      if (_backendStatus != 'online')
+        _scheduleReconnect();
+      else
+        _syncNow(automatic: true);
     });
   }
 
@@ -797,23 +960,33 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       for (final item in data.whereType<Map>()) {
         final value = item.cast<String, dynamic>();
         final id = value['id']?.toString();
-        if (id != null) await _repository!.upsert(entity: entity, recordId: id, data: value);
+        if (id != null)
+          await _repository!.upsert(entity: entity, recordId: id, data: value);
       }
     } else if (data is Map && data['id'] != null) {
       final value = data.cast<String, dynamic>();
-      await _repository!.upsert(entity: entity, recordId: value['id'].toString(), data: value);
+      await _repository!.upsert(
+        entity: entity,
+        recordId: value['id'].toString(),
+        data: value,
+      );
     }
   }
 
   Future<String> _lastSyncSuffix() async {
     final value = await _repository?.lastSyncAt();
-    return value == null ? '' : ' · última sincronización ${_formatTime(value)}';
+    return value == null
+        ? ''
+        : ' · última sincronización ${_formatTime(value)}';
   }
 
-  String _formatTime(DateTime? value) => value == null ? 'nunca' : boliviaTime(value);
+  String _formatTime(DateTime? value) =>
+      value == null ? 'nunca' : boliviaTime(value);
 
   String _localUuid() {
-    final seed = DateTime.now().microsecondsSinceEpoch.toRadixString(16).padLeft(12, '0');
+    final seed = DateTime.now().microsecondsSinceEpoch
+        .toRadixString(16)
+        .padLeft(12, '0');
     return '00000000-0000-4000-8000-${seed.substring(seed.length - 12)}';
   }
 

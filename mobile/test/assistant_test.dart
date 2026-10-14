@@ -89,6 +89,50 @@ void main() {
     expect(intent.input, {'name': 'Ana'});
   });
 
+  test('parses list commands when punctuation follows the entity', () {
+    for (final punctuation in ['.', '!', '?', ',', ';']) {
+      final intent = IntentValidator.parse(
+        'respuesta inválida',
+        [read],
+        request: 'lista los usuarios$punctuation',
+        schema: {
+          'entities': [
+            {'name': 'users'},
+          ],
+        },
+      );
+
+      expect(intent.toolId, 'users.list');
+      expect(intent.input, isEmpty);
+    }
+  });
+
+  test('keeps email values intact while removing final punctuation', () {
+    final intent = IntentValidator.parse(
+      'respuesta inválida',
+      [
+        UapTool({
+          'id': 'users.create',
+          'entity': 'users',
+          'operation': 'create',
+          'inputSchema': {
+            'properties': {
+              'email': {'type': 'string'},
+            },
+          },
+        }),
+      ],
+      request: 'crea usuario correo ana@example.com.',
+      schema: {
+        'entities': [
+          {'name': 'users'},
+        ],
+      },
+    );
+
+    expect(intent.input, {'email': 'ana@example.com'});
+  });
+
   test('refuses malformed output when the request is ambiguous', () {
     final intent = IntentValidator.parse('respuesta libre', [
       read,

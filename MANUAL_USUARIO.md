@@ -1,5 +1,19 @@
 # Manual de usuario
 
+## Asistente móvil: voz local sin Internet
+
+La aplicación Flutter móvil reemplazó Android `SpeechRecognizer` por Sherpa-ONNX local. No usa Google, un servicio de voz del teléfono ni una URL de speech cloud. El modelo español Moonshine v2 está incluido en `mobile/assets/speech/` y se copia a almacenamiento privado de la aplicación durante el primer uso; no se descarga en runtime.
+
+- Modelo: `sherpa-onnx-moonshine-base-es-quantized-2026-02-27`, fuente oficial [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models), con Moonshine Community License no comercial según el `LICENSE` incluido.
+- Archivos: `encoder_model.ort` 20,964,320 bytes, `decoder_model_merged.ort` 43,612,200 bytes y `tokens.txt` 532,090 bytes; total 65,108,610 bytes, aproximadamente 62.1 MiB. Los SHA-256 están en `mobile/lib/voice/speech_model.dart`.
+- Audio: captura mono PCM16 a 16 kHz durante una utterance de hasta 8 segundos; la inferencia usa CPU y dos threads, adecuada como configuración inicial para Snapdragon 720G. La documentación oficial informa decodificación aproximadamente en tiempo real en su equipo de referencia; el rendimiento real del teléfono debe medirse en hardware.
+- Permiso: solo `RECORD_AUDIO`. El modelo y la biblioteca nativa de Sherpa no necesitan Internet después de instalar el APK.
+- Modos: **Alexa** es exclusivamente por micrófono; **Historial** conserva entrada de texto. El transcript sigue el parser UAP, la confirmación y el outbox local existentes. TTS continúa separado y usa la voz local de Android.
+
+### Prueba con USB desconectado
+
+Compilá e instalá el APK, concedé el permiso del micrófono, abrí **Alexa** y luego desconectá USB, Wi-Fi y datos móviles. Hablá una solicitud en español. Con contrato UAP en caché, el LLM y el ASR siguen siendo locales; las mutaciones se guardan en el outbox hasta que vuelva la conectividad. Un error de modelo, biblioteca nativa, permiso o ausencia de voz se informa explícitamente en español, sin fallback cloud.
+
 ## Desarrollo con recarga inmediata
 
 Desde `C:\Users\nelso\Documents\Docker Proyectos\sw1-2-26\Primer-Parcial-sw1` ejecutá el compose raíz:
@@ -205,3 +219,9 @@ El backend generado es la autoridad. `GET /uap/v1/sync/changes?since=<cursor>` d
 La reconexión automática escucha cambios de `connectivity_plus` y el resume de la aplicación, pero siempre verifica con una solicitud real de descubrimiento UAP. Usa backoff acotado de 1, 2, 5, 10 y 30 segundos, una sola sincronización concurrente y como máximo cinco intentos por evento. Solo mantiene un timer de dos minutos en primer plano si hay operaciones pendientes. WebSocket no es necesario para la consistencia offline; podría usarse en el futuro únicamente para avisar que conviene despertar este mismo flujo. **Sincronizar ahora** permanece como fallback manual.
 
 USB exacto: en la PC ejecutá `adb reverse tcp:8080 tcp:80`; en el teléfono usá `http://127.0.0.1:8080/deployments/<slug>`. El socket del teléfono llega por USB al gateway de la PC y la ruta selecciona el despliegue. No es una conexión cloud ni cambia el almacenamiento SQLite local.
+
+### Cambiar de backend y borrar la base local
+
+Para cambiar la aplicación a otro backend sin conservar registros del backend anterior, abrí **Configuración y detalles** y elegí **Borrar base local SQLite**. La aplicación solicita una confirmación explícita y luego cierra, elimina y recrea su archivo local predeterminado `uap_offline.db` antes de volver a descubrir el backend.
+
+**Advertencia de pérdida de datos:** esta acción elimina todos los registros en caché, el snapshot UAP, las identidades, generaciones, cursor y las operaciones de outbox pendientes, fallidas o en conflicto. Esas operaciones no podrán sincronizarse. La URL del backend configurado **NO se elimina**. El botón queda deshabilitado mientras la operación está en curso y la aplicación informa si el borrado o la reconexión fallan.

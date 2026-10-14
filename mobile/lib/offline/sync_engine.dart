@@ -18,6 +18,14 @@ class SyncEngine {
   Future<SyncState> sync() =>
       _running ??= _sync().whenComplete(() => _running = null);
 
+  Future<void> waitForIdle() async {
+    try {
+      await _running;
+    } catch (_) {
+      // The reset operation must still close the database after a failed sync.
+    }
+  }
+
   Future<SyncState> _sync() async {
     var finalState = SyncState.synced;
     final serverState = await transport.state();
@@ -91,12 +99,19 @@ class HttpSyncTransport implements SyncTransport {
   final Map<String, String> _headers;
   @override
   Future<Map<String, dynamic>> state() async {
-    final response = await _http.get(Uri.parse('$baseUrl/uap/v1/sync/state'), headers: _headers);
-    if (response.statusCode == 404) throw StateError('Protocolo de sincronización no disponible');
+    final response = await _http.get(
+      Uri.parse('$baseUrl/uap/v1/sync/state'),
+      headers: _headers,
+    );
+    if (response.statusCode == 404)
+      throw StateError('Protocolo de sincronización no disponible');
     if (response.statusCode < 200 || response.statusCode >= 300)
-      throw Exception('Falló la lectura del estado de sincronización (HTTP ${response.statusCode}).');
+      throw Exception(
+        'Falló la lectura del estado de sincronización (HTTP ${response.statusCode}).',
+      );
     return (jsonDecode(response.body) as Map).cast<String, dynamic>();
   }
+
   @override
   Future<Map<String, dynamic>> pull(String cursor) async {
     final response = await _http.get(

@@ -4,7 +4,7 @@
 /// asigná [activeBackendUrl] a [deployedBackendUrl] (o la URL LAN accesible)
 /// y dejá [backendHostHeader] en null.
 const deployedBackendUrl =
-    'https://api-gymnasio-f3d823e4.primerpacialsw.duckdns.org';
+    'https://api-primerpacialsw.duckdns.org/deployments/gymnasio-f3d823e4';
 
 /// URL del lado del teléfono para `adb reverse tcp:8080 tcp:80`.
 const usbTestBackendUrl = 'http://127.0.0.1:8080';
