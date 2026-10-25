@@ -38,4 +38,17 @@ export function selfLoopGeometry(box, offset = 0) {
   };
 }
 
+// Cubic bezier at t=0.5 for the self-loop path (P0, C1, C2, P3).
+export function selfLoopMidpoint(geometry) {
+  const { sourceEdge, targetEdge, control } = geometry;
+  return { x: (sourceEdge.x + 3 * control.x + 3 * control.x + targetEdge.x) / 8, y: (sourceEdge.y + 3 * sourceEdge.y + 3 * targetEdge.y + targetEdge.y) / 8 };
+}
+
+// UML association class: a dashed segment from the relation midpoint to the border of the association class.
+export function associationLinkGeometry(midpoint, box) {
+  const dx = midpoint.x - box.center.x, dy = midpoint.y - box.center.y;
+  const scale = Math.max(Math.abs(dx) / Math.max(box.width / 2, 1), Math.abs(dy) / Math.max(box.height / 2, 1), 0.0001);
+  return { from: midpoint, to: { x: box.center.x + dx / scale, y: box.center.y + dy / scale } };
+}
+
 export const endpointLabelGeometry = { ENDPOINT_GAP, NORMAL_OFFSET, DOWNWARD_BIAS };

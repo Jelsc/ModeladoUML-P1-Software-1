@@ -9,6 +9,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 
+from .association_class import association_fk_names, expand_association_classes
 from .cardinality import classify_cardinality
 
 
@@ -175,6 +176,7 @@ def _id_sql_type(item):
 
 
 def generate_ddl(diagram: dict) -> str:
+    diagram = expand_association_classes(diagram)
     classes = diagram.get("classes", [])
     by_name = {c.get("name"): c for c in classes}
     lines = ["-- Generated PostgreSQL DDL from the UML diagram.", "-- This script is an artifact; the editor never executes it.", ""]
@@ -224,11 +226,15 @@ def ddl_to_diagram(result: DdlResult, current: dict) -> tuple[dict, list[dict]]:
         attrs = [{**old_attrs.get(col["name"], {"id": str(uuid.uuid4())}), "name": col["name"], "type": col["type"]} for col in table["columns"]]
         classes.append({"id": old.get("id", str(uuid.uuid4())), "name": table["name"], "x": old.get("x", 80 + (index % 4) * 260), "y": old.get("y", 80 + (index // 4) * 220), "attributes": attrs, "methods": old.get("methods", [])})
     by_name = {c["name"]: c for c in classes}; relations = []
-    old_relations = current.get("relations", [])
+    old_relations = current.get("relations", []); by_id = {c["id"]: c for c in classes}
+    links = [(r, by_id.get(str(r.get("association_class_id"))), by_id.get(str(r.get("source_id"))), by_id.get(str(r.get("target_id")))) for r in old_relations if r.get("association_class_id")]
+    links = [item for item in links if all(item[1:])]
+    implied = {(link["name"], end["name"], column) for _, link, source, target in links for end, column in zip((source, target), association_fk_names(source["name"], target["name"]))}
     for table in result.tables:
         for fk in table["foreign_keys"]:
             dependent, referenced = by_name.get(table["name"]), by_name.get(fk["table"])
             if not dependent or not referenced: continue
+            if (dependent["name"], referenced["name"], fk["column"]) in implied: continue
             old = next((r for r in old_relations if (r.get("from") or r.get("source")) == referenced["name"] and (r.get("to") or r.get("target")) == dependent["name"] and r.get("label") == fk["column"]), {})
             dependent_attr = next((a for a in dependent.get("attributes", []) if a["name"] == fk["column"]), None)
             referenced_attr = next((a for a in referenced.get("attributes", []) if a["name"] == fk.get("target", "id")), None)
@@ -237,6 +243,7 @@ def ddl_to_diagram(result: DdlResult, current: dict) -> tuple[dict, list[dict]]:
             ref_ep = referenced_attr["id"] if referenced_attr else old.get("source_endpoint")
             ref_ep_type = "attribute" if referenced_attr else old.get("source_endpoint_type", "class")
             relations.append({**old, "id": old.get("id", str(uuid.uuid4())), "source_id": referenced["id"], "target_id": dependent["id"], "from": referenced["name"], "to": dependent["name"], "type": "association", "label": fk["column"], "source_endpoint": ref_ep, "target_endpoint": dep_ep, "source_endpoint_type": ref_ep_type, "target_endpoint_type": dep_ep_type, "source_multiplicity": "0..1", "target_multiplicity": "0..*"})
+    for relation, link, source, target in links: relations.append({**relation, "source_id": source["id"], "target_id": target["id"], "from": source["name"], "to": target["name"], "association_class_id": link["id"]})
     warnings = list(result.warnings)
     removed = set(existing) - set(by_name)
     if removed: warnings.append(_error(f"Se reemplazarán las clases ausentes en el SQL: {', '.join(sorted(removed))}.", code="classes_removed"))

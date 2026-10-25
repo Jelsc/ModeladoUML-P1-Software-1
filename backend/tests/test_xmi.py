@@ -101,7 +101,7 @@ def test_export_assembles_classes_and_connectors_in_enterprise_architect_diagram
     relation_ids = {element.attrib["{http://schema.omg.org/spec/XMI/2.1}id"] for element in root.iter() if element.attrib.get("{http://schema.omg.org/spec/XMI/2.1}type") in {"uml:Association", "uml:Dependency", "uml:Abstraction"} and "{http://schema.omg.org/spec/XMI/2.1}id" in element.attrib}
     all_connectors = root.findall("xmi:Extension/connectors/connector", namespace)
     connectors = [connector for connector in all_connectors if connector.attrib["{http://schema.omg.org/spec/XMI/2.1}idref"] in relation_ids]
-    assert len(all_connectors) == 3
+    assert len(all_connectors) == 1  # one graphical connector per UML relation, none per association end
     assert len(class_visuals) == 2
     assert len(relation_visuals) == 1
     assert {visual.attrib["subject"] for visual in relation_visuals} <= relation_ids
@@ -254,7 +254,7 @@ def test_export_and_parse_preserve_recursive_relation_endpoints_and_multiplicity
     assert relation["target_multiplicity"] == "0..1"
 
 
-def test_export_emits_ea_links_owned_association_ends_and_auxiliary_connectors():
+def test_export_emits_ea_links_and_owned_association_ends_without_auxiliary_connectors():
     diagram = {
         "id": "ea-mapping",
         "title": "EA mapping",
@@ -279,11 +279,12 @@ def test_export_emits_ea_links_owned_association_ends_and_auxiliary_connectors()
     extension = root.find("xmi:Extension", {"xmi": "http://schema.omg.org/spec/XMI/2.1"})
     class_elements = {element.attrib[xmi + "idref"]: element for element in extension.findall("elements/element") if element.attrib.get(xmi + "type") == "uml:Class"}
     assert relation_ids <= {link.attrib[xmi + "id"] for element in class_elements.values() for link in element.findall("links/*")}
-    owned_ends = [attribute for element in package if element.attrib.get(xmi + "type") == "uml:Class" for attribute in element.findall("ownedAttribute") if attribute.attrib.get("association")]
+    assert not [attribute for element in package if element.attrib.get(xmi + "type") == "uml:Class" for attribute in element.findall("ownedAttribute") if attribute.attrib.get("association")]
+    owned_ends = [end for element in package if element.attrib.get(xmi + "type") == "uml:Association" for end in element.findall("ownedEnd")]
     assert len(owned_ends) == 6
-    assert all(attribute.find("type").attrib[xmi + "idref"] in class_elements for attribute in owned_ends)
+    assert all(end.find("type").attrib[xmi + "idref"] in class_elements for end in owned_ends)
     connectors = extension.findall("connectors/connector")
-    assert len(connectors) == 12
+    assert len(connectors) == 6
     main_connectors = [connector for connector in connectors if connector.attrib[xmi + "idref"] in relation_ids]
     assert {connector.find("properties").attrib["ea_type"] for connector in main_connectors} == {"Association", "Aggregation", "Dependency", "Abstraction"}
     assert {connector.find("properties").attrib.get("subtype") for connector in main_connectors if connector.find("properties").attrib["ea_type"] == "Aggregation"} == {"Weak", "Strong"}

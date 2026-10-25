@@ -736,6 +736,14 @@ select:focus {
 .class-card:active {
   cursor: grabbing;
 }
+.class-card.association-class {
+  border-style: dashed;
+}
+.class-card .stereotype {
+  display: block;
+  font-weight: 400;
+  opacity: 0.7;
+}
 .class-title {
   display: flex;
   align-items: center;
@@ -935,6 +943,13 @@ select:focus {
 }
 .relation-line {
   stroke: var(--relation);
+  pointer-events: none;
+}
+.relation .association-link {
+  fill: none;
+  stroke: var(--relation);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
   pointer-events: none;
 }
 .relation-hit {

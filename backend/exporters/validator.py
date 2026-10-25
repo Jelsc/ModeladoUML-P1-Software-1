@@ -1,5 +1,7 @@
 import re
 
+from .association_class import expand_association_classes
+
 
 class UMLValidationError(ValueError):
     pass
@@ -107,6 +109,7 @@ def validate_diagram(diagram: dict) -> None:
 
 
 def normalize_diagram(diagram: dict) -> dict:
+    diagram = expand_association_classes(diagram)
     validate_diagram(diagram)
     result = dict(diagram)
     result["classes"] = []

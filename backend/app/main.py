@@ -1,4 +1,4 @@
-import json, math, re, time, uuid
+import json, logging, math, re, time, uuid
 from datetime import datetime, timezone
 from typing import Literal
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -21,9 +21,11 @@ from .assistant.schemas import AssistantCommand, ExecuteRequest, ParseRequest
 from .assistant.gemini import try_interpret
 from .vision import router as vision_router
 from exporters.uml import export_zip
+from exporters.association_class import association_fk_names
 from exporters.sql_ddl import ddl_to_diagram, generate_ddl, parse_ddl
 from exporters.postman import generate_postman_collection
 from exporters.xmi import export_xmi, parse_xmi, replace_diagram
+from exporters.xmi_merge import merge_diagram
 
 app = FastAPI(title="Collaborative UML Editor")
 app.include_router(vision_router)
@@ -143,13 +145,13 @@ def endpoint_for(db, endpoint_id, endpoint_type, class_id):
     if not item: raise HTTPException(422, "El extremo no pertenece a su clase")
     return endpoint_type
 def class_json(c):
-    return {"id": str(c.id), "name": c.name, "x": c.x, "y": c.y, "attributes": [{"id": str(a.id), "name": a.name, "type": a.type} for a in c.attributes], "methods": [{"id": str(m.id), "name": m.name, "type": m.return_type} for m in c.methods]}
+    return {"id": str(c.id), "name": c.name, "x": c.x, "y": c.y, "is_association": bool(c.is_association), "attributes": [{"id": str(a.id), "name": a.name, "type": a.type} for a in c.attributes], "methods": [{"id": str(m.id), "name": m.name, "type": m.return_type} for m in c.methods]}
 def relation_json(r):
     def endpoint(endpoint_id, endpoint_type, uml_class):
         if endpoint_type == "class": return {"id": None, "class": uml_class.name, "class_name": uml_class.name, "type": "class", "name": uml_class.name, "data_type": None, "return_type": None}
         item = next((x for x in (uml_class.attributes if endpoint_type == "attribute" else uml_class.methods) if x.id == endpoint_id), None)
         return {"id": str(endpoint_id) if endpoint_id else None, "class": uml_class.name, "class_name": uml_class.name, "type": endpoint_type, "name": item.name if item else "Unknown endpoint", "data_type": item.type if item and endpoint_type == "attribute" else None, "return_type": item.return_type if item and endpoint_type == "method" else None}
-    return {"id": str(r.id), "source_id": str(r.source_id), "target_id": str(r.target_id), "from": r.source.name, "to": r.target.name, "source_endpoint": str(r.source_endpoint) if r.source_endpoint else None, "target_endpoint": str(r.target_endpoint) if r.target_endpoint else None, "source_endpoint_type": r.source_endpoint_type, "target_endpoint_type": r.target_endpoint_type, "source_endpoint_info": endpoint(r.source_endpoint, r.source_endpoint_type, r.source), "target_endpoint_info": endpoint(r.target_endpoint, r.target_endpoint_type, r.target), "type": r.type.value, "label": r.label, "source_multiplicity": r.source_multiplicity, "target_multiplicity": r.target_multiplicity}
+    return {"id": str(r.id), "source_id": str(r.source_id), "target_id": str(r.target_id), "from": r.source.name, "to": r.target.name, "source_endpoint": str(r.source_endpoint) if r.source_endpoint else None, "target_endpoint": str(r.target_endpoint) if r.target_endpoint else None, "source_endpoint_type": r.source_endpoint_type, "target_endpoint_type": r.target_endpoint_type, "source_endpoint_info": endpoint(r.source_endpoint, r.source_endpoint_type, r.source), "target_endpoint_info": endpoint(r.target_endpoint, r.target_endpoint_type, r.target), "type": r.type.value, "label": r.label, "source_multiplicity": r.source_multiplicity, "target_multiplicity": r.target_multiplicity, "association_class_id": str(r.association_class_id) if r.association_class_id else None}
 def diagram_json(d): return {"id": str(d.id), "title": d.title, "classes": [class_json(c) for c in d.classes], "relations": [relation_json(r) for r in d.relations]}
 
 @app.post("/assistant/transcribe")
@@ -233,7 +235,7 @@ def persist_sql_diagram(db, diagram, next_diagram):
     for item in next_diagram.get("relations", []):
         relation = old_relations.get(str(item["id"])) or Relation(id=uuid.UUID(str(item["id"])), diagram_id=diagram.id)
         relation.source_id, relation.target_id = uuid.UUID(str(item["source_id"])), uuid.UUID(str(item["target_id"]))
-        relation.type = relation_type(item.get("type", "association")); relation.label = item.get("label")
+        relation.type = relation_type(item.get("type", "association")); relation.label = item.get("label"); relation.association_class_id = uuid.UUID(str(item["association_class_id"])) if str(item.get("association_class_id")) in class_models_by_id else None
         def endpoint_value(raw_id, raw_type, class_model):
             endpoint_type = str(raw_type or "class").lower()
             if endpoint_type == "class" or class_model is None: return None, "class"
@@ -448,13 +450,41 @@ async def update_relation(relation_id: uuid.UUID, body: RelationPatch, db: Sessi
     endpoint_for(db, values.get("source_endpoint", r.source_endpoint), source_type, r.source_id); endpoint_for(db, values.get("target_endpoint", r.target_endpoint), target_type, r.target_id)
     values["source_endpoint_type"] = source_type; values["target_endpoint_type"] = target_type
     for key, value in values.items(): setattr(r, key, value)
-    touch_diagram(db, r.diagram); db.commit(); db.refresh(r); await publish(r.diagram_id, "relation.updated", {"relation": relation_json(r)}); return relation_json(r)
+    freed = unlink_association_class(db, r) if r.association_class_id and not is_many_to_many(r) else None
+    touch_diagram(db, r.diagram); db.commit(); db.refresh(r)
+    if freed: await publish(r.diagram_id, "class.updated", {"class": class_json(freed)})
+    await publish(r.diagram_id, "relation.updated", {"relation": relation_json(r)}); return relation_json(r)
+def max_is_many(value): return bool(value) and str(value).strip().split("..")[-1].strip().lower() in ("*", "many")
+def is_many_to_many(r): return r.type == RelationType.association and max_is_many(r.source_multiplicity) and max_is_many(r.target_multiplicity)
+def unlink_association_class(db, r):
+    c = db.get(UmlClass, r.association_class_id) if r.association_class_id else None
+    if c: c.is_association = False
+    r.association_class_id = None; return c
+def unique_class_name(names, base):
+    taken = {n.lower() for n in names}; name, n = base[:120], 2
+    while name.lower() in taken: suffix = str(n); name = base[:120 - len(suffix)] + suffix; n += 1
+    return name
+@app.post("/relations/{relation_id}/association-class")
+async def convert_to_association_class(relation_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
+    r = db.query(Relation).filter(Relation.id == relation_id).first()
+    if not r: raise HTTPException(404, "Relación no encontrada")
+    editable(db, user, r.diagram_id)
+    if r.association_class_id: raise HTTPException(409, "La relación ya tiene una clase de asociación")
+    if r.source_endpoint_type != "class" or r.target_endpoint_type != "class" or not is_many_to_many(r): raise HTTPException(422, "Solo se pueden convertir asociaciones muchos a muchos entre clases")
+    d = r.diagram; a, b = r.source, r.target; fk_a, fk_b = association_fk_names(a.name, b.name)
+    c = UmlClass(diagram_id=d.id, name=unique_class_name([x.name for x in d.classes], f"{a.name}{b.name}"), x=round((a.x + b.x) / 2), y=round((a.y + b.y) / 2) + 200, is_association=True)
+    c.attributes = [Attribute(name=fk_a, type="Long"), Attribute(name=fk_b, type="Long")]
+    db.add(c); db.flush(); r.association_class_id = c.id; touch_diagram(db, d); db.commit(); db.refresh(c); db.refresh(r)
+    await publish(d.id, "class.created", {"class": class_json(c)}); await publish(d.id, "relation.updated", {"relation": relation_json(r)})
+    return {"class": class_json(c), "relation": relation_json(r)}
 @app.delete("/relations/{relation_id}")
 async def delete_relation(relation_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
     r = db.query(Relation).filter(Relation.id == relation_id).first()
     if not r: raise HTTPException(404, "Relación no encontrada")
     editable(db, user, r.diagram_id)
-    diagram_id = r.diagram_id; touch_diagram(db, r.diagram); db.delete(r); db.commit(); await publish(diagram_id, "relation.deleted", {"relation_id": str(relation_id)}); return {"ok": True}
+    diagram_id = r.diagram_id; freed = unlink_association_class(db, r); touch_diagram(db, r.diagram); db.delete(r); db.commit()
+    if freed: await publish(diagram_id, "class.updated", {"class": class_json(freed)})
+    await publish(diagram_id, "relation.deleted", {"relation_id": str(relation_id)}); return {"ok": True}
 @app.post("/diagrams/{diagram_id}/export")
 def export(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
     d = owned(db, user, diagram_id); return StreamingResponse(iter([export_zip(diagram_json(d))]), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="uml-{diagram_id}.zip"'})
@@ -476,17 +506,26 @@ async def read_xmi_upload(upload: UploadFile):
 
 @app.post("/diagrams/{diagram_id}/xmi/validate")
 async def validate_xmi(diagram_id: uuid.UUID, file: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(current_user)):
-    member_access(db, user, diagram_id)
-    return (await read_xmi_upload(file)).response()
+    diagram = member_access(db, user, diagram_id)
+    document = await read_xmi_upload(file)
+    try:
+        report = merge_diagram(db, diagram, document)  # dry run: nothing is persisted
+    finally:
+        db.rollback()
+    return {**document.response(), "merge": report}
 
 @app.post("/diagrams/{diagram_id}/xmi/import")
-async def import_xmi(diagram_id: uuid.UUID, file: UploadFile = File(...), confirm: bool = Form(False), db: Session = Depends(get_db), user=Depends(current_user)):
+async def import_xmi(diagram_id: uuid.UUID, file: UploadFile = File(...), confirm: bool = Form(False), mode: str = Form("merge"), db: Session = Depends(get_db), user=Depends(current_user)):
     diagram = editable(db, user, diagram_id)
     document = await read_xmi_upload(file)
-    if not confirm:
+    if mode not in ("merge", "replace"):
+        raise HTTPException(422, "Modo de importación no válido.")
+    if mode == "replace" and not confirm:
         raise HTTPException(409, "Confirme explícitamente el reemplazo del diagrama.")
     try:
-        replace_diagram(db, diagram, document)
+        report = merge_diagram(db, diagram, document) if mode == "merge" else None
+        if mode == "replace":
+            replace_diagram(db, diagram, document)
         db.commit()
         db.refresh(diagram)
     except HTTPException:
@@ -494,8 +533,9 @@ async def import_xmi(diagram_id: uuid.UUID, file: UploadFile = File(...), confir
         raise
     except Exception as exc:
         db.rollback()
-        raise HTTPException(422, "No se pudo reemplazar el diagrama con el archivo XMI.") from exc
-    result = {**document.response(), "diagram": diagram_json(diagram)}
+        logging.getLogger(__name__).exception("XMI import failed")
+        raise HTTPException(422, f"No se pudo importar el archivo XMI ({type(exc).__name__}). No se aplicó ningún cambio.") from exc
+    result = {**document.response(), "warnings": document.warnings + (report["conflicts"] + report["skipped"] if report else []), "merge": report, "diagram": diagram_json(diagram)}
     await publish(diagram.id, "diagram.xmi_imported", {"diagram": result["diagram"]})
     return result
 

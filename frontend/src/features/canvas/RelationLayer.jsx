@@ -1,4 +1,4 @@
-import { endpointLabelPosition, selfLoopGeometry } from "../../relation-geometry.js";
+import { associationLinkGeometry, endpointLabelPosition, selfLoopGeometry, selfLoopMidpoint } from "../../relation-geometry.js";
 import { relationContext } from "../../relation-context.js";
 
 function relationKey(relation) {
@@ -78,10 +78,13 @@ export function RelationLayer({ diagram, classDimensions = {}, selectedId, hover
     const targetTangent = geometry?.targetTangent || unitVector({ x: targetEdge.x - cx, y: targetEdge.y - cy }, { x: ux, y: uy });
     const sourceLabel = endpointLabelPosition(sourceEdge, sourceTangent, "source");
     const targetLabel = endpointLabelPosition(targetEdge, targetTangent, "target");
+    const associationClass = relation.association_class_id ? classes.find((item) => item?.id === relation.association_class_id) : null;
+    const associationLink = associationClass ? associationLinkGeometry(geometry ? selfLoopMidpoint(geometry) : pointOnQuadratic(sourceEdge, { x: cx, y: cy }, targetEdge), classGeometry(associationClass, classDimensions[associationClass.id])) : null;
     const className = `relation ${relation.type || "association"} ${selectedId === relation.id ? "selected" : ""} ${hoveredId === relation.id ? "hovered" : ""}`;
     return <g key={relation.id} className={className} onMouseEnter={() => onHover(relationContext(relation))} onMouseLeave={() => onHover(null)} onClick={() => onSelect(relation.id)}>
       <path className="relation-hit" d={geometry?.path || `M ${sourceEdge.x} ${sourceEdge.y} Q ${cx} ${cy} ${targetEdge.x} ${targetEdge.y}`} />
       <path className="relation-line" d={geometry?.path || `M ${sourceEdge.x} ${sourceEdge.y} Q ${cx} ${cy} ${targetEdge.x} ${targetEdge.y}`} markerStart={markerFor(relation, "source")} markerEnd={markerFor(relation, "target")} />
+      {associationLink && <path className="association-link" d={`M ${associationLink.from.x} ${associationLink.from.y} L ${associationLink.to.x} ${associationLink.to.y}`} />}
       {relation.source_multiplicity && <text className="multiplicity" x={sourceLabel.x} y={sourceLabel.y} textAnchor="middle">{relation.source_multiplicity}</text>}
       {relation.target_multiplicity && <text className="multiplicity" x={targetLabel.x} y={targetLabel.y} textAnchor="middle">{relation.target_multiplicity}</text>}
       {relation.label && <text className="relation-label" x={labelX} y={labelY} textAnchor="middle">{relation.label}</text>}

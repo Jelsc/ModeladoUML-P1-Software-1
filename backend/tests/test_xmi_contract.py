@@ -25,5 +25,5 @@ def test_xmi_frontend_contract_has_member_export_editor_import_and_confirmation(
     assert "Exportar XMI" in topbar and "Importar XMI" in topbar
     assert 'accept=".xmi,.xml,application/xml,text/xml"' in board
     assert "/xmi/validate" in board and "/xmi/import" in board
-    assert "Confirmar reemplazo" in board and "setSelectedClassId(null)" in board
+    assert "Confirmar importación" in board and "setSelectedClassId(null)" in board
     assert "contentType.includes('xml')" in api
