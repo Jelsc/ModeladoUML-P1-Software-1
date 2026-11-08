@@ -41,16 +41,16 @@ def test_ai_answers_in_the_same_channel_and_events_carry_it(env):
     assert by_event["ai.thinking"]["channel"] == "desarrollo" and by_event["ai.done"]["channel"] == "desarrollo" and by_event["chat.message"]["message"]["channel"] == "desarrollo"
 
 
-def test_only_diseno_can_edit_the_diagram(env):
+def test_diseno_and_desarrollo_can_edit_the_diagram_but_test_cannot(env):
     env.llm.queue.append(reply("ok", {"action": "create_class", "class_name": "Pedido"}))
     post(env, OWNER, "@ia creá la clase Pedido", "desarrollo")
-    assert class_names(env) == [] and "chat es de consulta" in chat(env, "desarrollo")[-1]["content"]
-    env.llm.queue.append(reply("ok", {"action": "create_class", "class_name": "Pedido"}))
-    post(env, OWNER, "@ia creá la clase Pedido", "diseno")
-    assert class_names(env) == ["Pedido"]
+    assert class_names(env) == ["Pedido"] and "Creé la clase Pedido" in chat(env, "desarrollo")[-1]["content"]
+    env.llm.queue.append(reply("ok", {"action": "create_class", "class_name": "Cliente"}))
+    post(env, OWNER, "@ia creá la clase Cliente", "diseno")
+    assert class_names(env) == ["Cliente", "Pedido"]
     env.llm.queue.append(reply("ok", {"action": "create_class", "class_name": "Otra"}))
     post(env, OWNER, "@ia creá la clase Otra", "test")
-    assert class_names(env) == ["Pedido"]
+    assert class_names(env) == ["Cliente", "Pedido"] and "chat es de consulta" in chat(env, "test")[-1]["content"]
 
 
 def test_context_is_per_chat_and_dev_chat_sees_the_generated_backend(env):

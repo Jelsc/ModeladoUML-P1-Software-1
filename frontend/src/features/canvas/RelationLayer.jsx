@@ -1,3 +1,5 @@
+import { useRef } from "react";
+import { isClick, pressPoint } from "./click-guard.js";
 import { associationLinkGeometry, endpointLabelPosition, selfLoopGeometry, selfLoopMidpoint } from "../../relation-geometry.js";
 import { relationContext } from "../../relation-context.js";
 
@@ -42,6 +44,7 @@ function markerFor(relation, side) {
 }
 
 export function RelationLayer({ diagram, classDimensions = {}, aiChangedIds = [], selectedId, hoveredId, onSelect, onHover }) {
+  const press = useRef(null);
   const relations = Array.isArray(diagram?.relations) ? diagram.relations : [];
   const classes = Array.isArray(diagram?.classes) ? diagram.classes : [];
   const groups = {};
@@ -81,7 +84,7 @@ export function RelationLayer({ diagram, classDimensions = {}, aiChangedIds = []
     const associationClass = relation.association_class_id ? classes.find((item) => item?.id === relation.association_class_id) : null;
     const associationLink = associationClass ? associationLinkGeometry(geometry ? selfLoopMidpoint(geometry) : pointOnQuadratic(sourceEdge, { x: cx, y: cy }, targetEdge), classGeometry(associationClass, classDimensions[associationClass.id])) : null;
     const className = `relation ${relation.type || "association"} ${selectedId === relation.id ? "selected" : ""} ${hoveredId === relation.id ? "hovered" : ""} ${aiChangedIds.includes(relation.id) ? "ai-changed" : ""}`;
-    return <g key={relation.id} className={className} onMouseEnter={() => onHover(relationContext(relation))} onMouseLeave={() => onHover(null)} onClick={() => onSelect(relation.id)}>
+    return <g key={relation.id} className={className} onMouseEnter={() => onHover(relationContext(relation))} onMouseLeave={() => onHover(null)} onPointerDown={(event) => { press.current = pressPoint(event); }} onClick={(event) => { const clicked = isClick(press.current, event); press.current = null; if (clicked) onSelect(relation.id); }}>
       <path className="relation-hit" d={geometry?.path || `M ${sourceEdge.x} ${sourceEdge.y} Q ${cx} ${cy} ${targetEdge.x} ${targetEdge.y}`} />
       <path className="relation-line" d={geometry?.path || `M ${sourceEdge.x} ${sourceEdge.y} Q ${cx} ${cy} ${targetEdge.x} ${targetEdge.y}`} markerStart={markerFor(relation, "source")} markerEnd={markerFor(relation, "target")} />
       {associationLink && <path className="association-link" d={`M ${associationLink.from.x} ${associationLink.from.y} L ${associationLink.to.x} ${associationLink.to.y}`} />}

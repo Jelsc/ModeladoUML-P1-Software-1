@@ -8,6 +8,7 @@ from .validator import canonical_property_name, entity_route_path, java_identifi
 from .sql_ddl import generate_ddl
 from .cardinality import classify_cardinality, relation_column_name, relation_owned_columns
 from .uap import controller_source, dispatcher_source, exception_source, sync_store_source
+from .endpoints import render
 
 PACKAGE = "com.generated.uml"
 
@@ -172,24 +173,41 @@ def _entity(item, diagram):
     return "\n".join(lines + ["}", ""])
 
 
-def _repository(name):
-    return f"package {PACKAGE}.repositories;\n\nimport {PACKAGE}.models.{name};\nimport org.springframework.data.jpa.repository.JpaRepository;\n\npublic interface {name}Repository extends JpaRepository<{name}, Long> {{}}\n"
+def _repository(name, extra=""):
+    body = "{\n" + extra + "}" if extra else "{}"
+    return f"package {PACKAGE}.repositories;\n\nimport {PACKAGE}.models.{name};\nimport org.springframework.data.jpa.repository.JpaRepository;\n\npublic interface {name}Repository extends JpaRepository<{name}, Long> {body}\n"
 
 
-def _service(name):
-    return f"package {PACKAGE}.services;\n\nimport {PACKAGE}.models.{name};\nimport {PACKAGE}.repositories.{name}Repository;\nimport org.springframework.stereotype.Service;\nimport java.util.List;\nimport java.util.Optional;\n\n@Service\npublic class {name}Service {{\n    private final {name}Repository repository;\n    public {name}Service({name}Repository repository) {{ this.repository = repository; }}\n    public List<{name}> findAll() {{ return repository.findAll(); }}\n    public Optional<{name}> findById(Long id) {{ return repository.findById(id); }}\n    public {name} save({name} entity) {{ return repository.save(entity); }}\n    public void delete(Long id) {{ repository.deleteById(id); }}\n}}\n"
+def _service(name, extra=""):
+    imports = "import java.math.BigDecimal;\nimport java.time.*;\nimport java.util.*;\n" if extra else ""  # AI-written bodies may use the common value types by simple name
+    return f"package {PACKAGE}.services;\n\nimport {PACKAGE}.models.{name};\nimport {PACKAGE}.repositories.{name}Repository;\nimport org.springframework.stereotype.Service;\nimport java.util.List;\nimport java.util.Optional;\n{imports}\n@Service\npublic class {name}Service {{\n    private final {name}Repository repository;\n    public {name}Service({name}Repository repository) {{ this.repository = repository; }}\n    public List<{name}> findAll() {{ return repository.findAll(); }}\n    public Optional<{name}> findById(Long id) {{ return repository.findById(id); }}\n    public {name} save({name} entity) {{ return repository.save(entity); }}\n    public void delete(Long id) {{ repository.deleteById(id); }}\n{extra}}}\n"
 
 
-def _controller(name):
-    return f"package {PACKAGE}.controllers;\n\nimport {PACKAGE}.models.{name};\nimport {PACKAGE}.services.{name}Service;\nimport org.springframework.web.bind.annotation.*;\nimport java.util.List;\n\n@RestController\n@RequestMapping(\"{entity_route_path(name)}\")\npublic class {name}Controller {{\n    private final {name}Service service;\n    public {name}Controller({name}Service service) {{ this.service = service; }}\n    @GetMapping public List<{name}> all() {{ return service.findAll(); }}\n    @GetMapping(\"/{{id}}\") public {name} byId(@PathVariable Long id) {{ return service.findById(id).orElseThrow(); }}\n    @PostMapping public {name} create(@RequestBody {name} entity) {{ return service.save(entity); }}\n    @PutMapping(\"/{{id}}\") public {name} update(@PathVariable Long id, @RequestBody {name} entity) {{ entity.setId(id); return service.save(entity); }}\n    @DeleteMapping(\"/{{id}}\") public void delete(@PathVariable Long id) {{ service.delete(id); }}\n}}\n"
+def _controller(name, extra=""):
+    return f"package {PACKAGE}.controllers;\n\nimport {PACKAGE}.models.{name};\nimport {PACKAGE}.services.{name}Service;\nimport org.springframework.web.bind.annotation.*;\nimport java.util.List;\n\n@RestController\n@RequestMapping(\"{entity_route_path(name)}\")\npublic class {name}Controller {{\n    private final {name}Service service;\n    public {name}Controller({name}Service service) {{ this.service = service; }}\n    @GetMapping public List<{name}> all() {{ return service.findAll(); }}\n    @GetMapping(\"/{{id}}\") public {name} byId(@PathVariable Long id) {{ return service.findById(id).orElseThrow(); }}\n    @PostMapping public {name} create(@RequestBody {name} entity) {{ return service.save(entity); }}\n    @PutMapping(\"/{{id}}\") public {name} update(@PathVariable Long id, @RequestBody {name} entity) {{ entity.setId(id); return service.save(entity); }}\n    @DeleteMapping(\"/{{id}}\") public void delete(@PathVariable Long id) {{ service.delete(id); }}\n{extra}}}\n"
+
+
+def _entity_fields(item, diagram):
+    """attribute name (lowercase) -> (java field, java type), exactly as `_entity` declares the scalar fields."""
+    used, owned, result = {"id"}, relation_owned_columns(diagram).get(item["name"], set()), {}
+    for attribute in item["attributes"]:
+        if attribute["generated_name"] == "id":
+            continue
+        field = _unique_name(canonical_property_name(attribute["generated_name"], "field"), used)
+        if field not in owned:
+            result[str(attribute.get("name", "")).lower()] = (field, _type(attribute.get("type")))
+    return result
 
 
 def _dto(name):
     return f"package {PACKAGE}.dtos;\n\npublic record {name}Dto(Long id) {{}}\n"
 
 
-def build_project(diagram: dict) -> dict[str, bytes]:
-    diagram = normalize_diagram(diagram)
+def build_project(diagram: dict, with_endpoints: bool = True, report: list | None = None) -> dict[str, bytes]:
+    """`diagram["endpoints"]` (approved AI endpoint specs) are generated on top of the CRUD unless `with_endpoints` is False.
+    Specs that cannot be rendered are skipped and described in `report`."""
+    specs = [spec for spec in (diagram.get("endpoints") or []) if isinstance(spec, dict)] if with_endpoints else []
+    diagram = normalize_diagram({key: value for key, value in diagram.items() if key != "endpoints"})
     files = {"diagram.json": json.dumps(diagram, indent=2, ensure_ascii=False).encode()}
     root = "generated-spring-backend/"
     files[root + "pom.xml"] = _pom().encode()
@@ -208,10 +226,12 @@ def build_project(diagram: dict) -> dict[str, bytes]:
     for item in diagram["classes"]:
         name = item["generated_name"]
         base = root + "src/main/java/com/generated/uml/"
+        extra, problems = render(name, [s for s in specs if s.get("class_name") in (item["name"], name)], _entity_fields(item, diagram))
+        if report is not None: report.extend(f"{item['name']}.{problem}" for problem in problems)
         files[base + "models/" + name + ".java"] = _entity(item, diagram).encode()
-        files[base + "repositories/" + name + "Repository.java"] = _repository(name).encode()
-        files[base + "services/" + name + "Service.java"] = _service(name).encode()
-        files[base + "controllers/" + name + "Controller.java"] = _controller(name).encode()
+        files[base + "repositories/" + name + "Repository.java"] = _repository(name, extra["repository"]).encode()
+        files[base + "services/" + name + "Service.java"] = _service(name, extra["service"]).encode()
+        files[base + "controllers/" + name + "Controller.java"] = _controller(name, extra["controller"]).encode()
         files[base + "dtos/" + name + "Dto.java"] = _dto(name).encode()
     return files
 

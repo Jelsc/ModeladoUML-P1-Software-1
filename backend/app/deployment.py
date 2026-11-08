@@ -9,7 +9,7 @@ from pathlib import Path
 from .config import settings
 from .db import SessionLocal
 from .deployment_credentials import derive_database_identity, parse_database_runtime, redact_diagnostic
-from .models import Deployment
+from .models import ChatMessage, Deployment
 from exporters.project_builder import build_project
 
 SAFE_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}$")
@@ -32,7 +32,51 @@ class DockerCommandError(RuntimeError):
     def __init__(self, stage, returncode, stdout="", stderr=""):
         self.stage = stage
         self.returncode = returncode
+        self.output = redact_diagnostic(f"{_text(stdout)}\n{_text(stderr)}")[-20000:]  # full (redacted) build log, used to extract compiler errors
         super().__init__(f"stage={stage}; exit_code={returncode}; {diagnostic(stdout, stderr)}")
+
+
+def _text(value):
+    return value.decode(errors="replace") if isinstance(value, bytes) else str(value or "")
+
+
+COMPILE_ERROR = re.compile(r"\[ERROR\]\s+(\S+\.java):\[(\d+),\d+\][ \t]*([^\n]*)(?:\n[^\n]*?symbol:[ \t]*([^\n]*))?")
+
+
+def compile_errors(output, limit=4):
+    """Compiler messages (file, line, text and missing symbol) of a failed Maven build, so the team can see what the AI-written code got wrong.
+    Maven prints each error twice (details, then summary): they are merged by file and line."""
+    found = {}
+    for match in COMPILE_ERROR.finditer(output or ""):
+        key = (match.group(1).rsplit("/", 1)[-1], match.group(2))
+        item = f"{key[0]} línea {key[1]}: {match.group(3).strip()[:160]}" + (f" ({match.group(4).strip()[:80]})" if match.group(4) else "")
+        if key not in found or (match.group(4) and "(" not in found[key]):
+            found[key] = item
+    return list(found.values())[:limit]
+
+
+def _write_project(build_root, files):
+    shutil.rmtree(build_root, ignore_errors=True)
+    for relative, content in files.items():
+        target = (build_root / relative.removeprefix("generated-spring-backend/")).resolve()
+        if build_root not in target.parents:
+            raise ValueError("Archivo generado fuera del directorio controlado")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+
+def _announce(db, diagram_id, text):
+    """Tell the team in the Desarrollo chat. Best effort: a notification problem must never fail the deployment."""
+    try:
+        from . import main
+        message = ChatMessage(diagram_id=diagram_id, author_user_id=None, author_kind="ai", channel="desarrollo", content=text[:2000])
+        db.add(message)
+        db.commit()
+        db.refresh(message)
+        import redis
+        redis.Redis.from_url(settings.REDIS_URL).publish(f"diagram:{diagram_id}", json.dumps({"event": "chat.message", "message": main.chat_json(message)}))
+    except Exception:
+        db.rollback()
 
 
 def slugify(title: str, diagram_id: str) -> str:
@@ -209,27 +253,41 @@ def deploy(deployment_id):
     try:
         deployment.status = "building"
         deployment.error_summary = None
+        deployment.warning_summary = None
         db.commit()
         slug = deployment.slug
         container, database, image = _safe_names(slug)
         deployment.container_name, deployment.db_container_name, deployment.image_name = container, database, image
         source = json.loads(deployment.project_json)
-        files = build_project(source)
+        endpoints = [spec for spec in source.get("endpoints") or [] if isinstance(spec, dict)]
+        skipped = []
+        files = build_project(source, report=skipped)
         digest = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         build_root = Path(settings.DEPLOY_BUILD_DIR).resolve() / slug
         if build_root.parent != Path(settings.DEPLOY_BUILD_DIR).resolve():
             raise ValueError("Directorio de construcción inválido")
-        shutil.rmtree(build_root, ignore_errors=True)
-        for relative, content in files.items():
-            target = (build_root / relative.removeprefix("generated-spring-backend/")).resolve()
-            if build_root not in target.parents:
-                raise ValueError("Archivo generado fuera del directorio controlado")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
+        _write_project(build_root, files)
         deployment.project_hash = digest
         _remove_container(container)
         _remove_container(database)
-        _run(["docker", "build", "--pull=false", "--tag", image, str(build_root)], timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler")
+        build_command = ["docker", "build", "--pull=false", "--tag", image, str(build_root)]
+        announcement = None
+        if skipped:
+            deployment.warning_summary = ("No se generaron estos endpoints: " + "; ".join(skipped))[:1500]
+            announcement = f"⚠ Despliegue de {slug}: {deployment.warning_summary}"
+        try:
+            _run(build_command, timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler")
+        except DockerCommandError as exc:
+            if not endpoints:
+                raise
+            # Hybrid fallback: the AI endpoints did not compile, so deploy the plain CRUD and tell the team exactly why.
+            errors = compile_errors(exc.output)
+            names = ", ".join(f"{spec.get('class_name', '?')}.{spec.get('name', '?')}" for spec in endpoints)
+            detail = "\n".join(f"• {item}" for item in errors) or f"• {diagnostic(exc.output, '')[-300:]}"
+            _write_project(build_root, build_project(source, with_endpoints=False))
+            _run(build_command, timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler")  # a second failure is not the AI endpoints' fault: it fails the deployment as usual
+            deployment.warning_summary = (f"Los endpoints de la IA no compilaron; se desplegó solo el CRUD. Omitidos: {names}.\n{detail}")[:1500]
+            announcement = f"⚠ El despliegue usó solo el CRUD porque los endpoints aprobados no compilaron.\nOmitidos: {names}.\nErrores del compilador:\n{detail}\nPídanme que los corrija en este chat y vuelvan a desplegar."
         _run(["docker", "volume", "create", f"uml-generated-data-{slug}"], timeout=30, stage="database.volume")
         database_username, database_password = database_identity(deployment)
         _run(_database_run_args(database, slug, database_username, database_password), timeout=60, stage="database.start")
@@ -247,6 +305,8 @@ def deploy(deployment_id):
         deployment.url = deployment_url(slug)
         deployment.updated_at = datetime.now(timezone.utc)
         db.commit()
+        if announcement:
+            _announce(db, deployment.diagram_id, announcement)
     except Exception as exc:
         deployment.status = "failed"
         deployment.url = None

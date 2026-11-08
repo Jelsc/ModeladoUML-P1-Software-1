@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { endpointSummary, kindLabel, removeEndpoint, replaceEndpoint, sortEndpoints, statusLabel } from "../src/features/chat/endpoint-model.js";
 import { CHANNELS, CHAT_MAX_LENGTH, addThinking, applyMention, authorLabel, bumpUnread, canSend, channelOf, clearUnread, clipText, emptyChats, emptyUnread, formatChatTime, isOwnMessage, mentionOpen, mergeMessages, messageChannel, oldestCreatedAt, parseAiMessage, removeThinking, replyPreview, thinkingLabel, totalUnread } from "../src/features/chat/chat-model.js";
 
 const msg = (id, minute, extra = {}) => ({ id, created_at: `2026-01-01T12:${String(minute).padStart(2, "0")}:00+00:00`, content: id, author_kind: "user", author_user_id: 1, author_name: "Ana", ...extra });
@@ -110,7 +111,7 @@ assert.match(board, /aiHighlight\.classIds\.includes\(item\.id\)/);
 assert.doesNotMatch(read("../src/features/chat/ChatPanel.jsx") + read("../src/features/chat/AiSettings.jsx"), /dangerouslySetInnerHTML/);
 // Three fixed team chats: same AI, separated conversations. Only Diseño lets the AI edit the diagram.
 assert.deepEqual(CHANNELS.map((c) => c.id), ["diseno", "desarrollo", "test"]);
-assert.deepEqual(CHANNELS.map((c) => c.aiEdits), [true, false, false]);
+assert.deepEqual(CHANNELS.map((c) => c.aiEdits), [true, true, false], "Diseño and Desarrollo edit; Test is consultation only");
 assert.equal(channelOf("desarrollo").label, "Desarrollo");
 assert.equal(channelOf("nope").id, "diseno", "unknown channel falls back to Diseño");
 assert.equal(messageChannel({}), "diseno", "messages without channel belong to Diseño");
@@ -133,4 +134,21 @@ const dockedPanel = read("../src/features/chat/ChatPanel.jsx");
 assert.match(dockedPanel, /aria-label="Ver chats del diagrama"/); assert.match(dockedPanel, /CHANNELS\.map/);
 assert.doesNotMatch(dockedPanel, /Nuevo chat/, "chats are fixed: there is no 'new chat' nor chat history");
 assert.match(read("../src/style.css"), /\.app-shell\.chat-docked/);
+
+// Endpoints designed by the AI: pending ones first, readable summary, immutable updates.
+const ep = (id, status, name, cls = "Cliente") => ({ id, status, name, class_name: cls });
+assert.deepEqual(sortEndpoints([ep("1", "approved", "a"), ep("2", "proposed", "z"), ep("3", "proposed", "b", "Aaa")]).map((e) => e.id), ["3", "2", "1"], "pending first, then class and name");
+assert.equal(endpointSummary([]), "Sin endpoints de la IA");
+assert.equal(endpointSummary([ep("1", "approved", "a")]), "1 endpoint · 1 aprobado · 0 pendientes");
+assert.equal(endpointSummary([ep("1", "approved", "a"), ep("2", "proposed", "b"), ep("3", "proposed", "c")]), "3 endpoints · 1 aprobado · 2 pendientes");
+assert.equal(statusLabel("proposed"), "Pendiente"); assert.equal(statusLabel("approved"), "Aprobado"); assert.equal(kindLabel("custom"), "Código personalizado"); assert.equal(kindLabel("raro"), "raro");
+const eps = [ep("1", "proposed", "a")];
+assert.equal(replaceEndpoint(eps, ep("1", "approved", "a"))[0].status, "approved"); assert.equal(eps[0].status, "proposed", "input must not be mutated");
+assert.equal(replaceEndpoint(eps, ep("2", "proposed", "b")).length, 2); assert.deepEqual(removeEndpoint(eps, "1"), []);
+const endpointsHook = read("../src/features/chat/useEndpoints.js");
+assert.match(endpointsHook, /ai\.endpoints/, "the list refreshes when anyone proposes, approves or deletes"); assert.match(endpointsHook, /\/endpoints\/\$\{id\}/);
+assert.match(dockedPanel, /current\.id === "desarrollo" && endpoints && <EndpointList/, "the endpoint list lives in the Desarrollo chat");
+assert.match(board, /useEndpoints\(\{ diagramId: id, subscribe: collaboration\.subscribe \}\)/); assert.match(board, /canEdit: !readOnly/, "viewers cannot approve");
+assert.doesNotMatch(read("../src/features/chat/EndpointList.jsx"), /dangerouslySetInnerHTML/);
+assert.match(read("../src/features/deployment/DeploymentPanel.jsx"), /deployment\?\.warning_summary/, "the compile warning is shown in the deployment panel");
 console.log("Chat checks passed.");

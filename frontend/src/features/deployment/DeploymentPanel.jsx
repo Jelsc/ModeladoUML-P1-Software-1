@@ -94,6 +94,7 @@ export function DeploymentPanel({ diagramId, onClose }) {
     <p className={`deployment-status deployment-${status}`}>{status}</p>
     {deployment?.url && <p className="deployment-url"><b>URL de la API</b><br /><code>{deployment.url}</code></p>}
     {deployment?.error_summary && <p className="error" role="alert"><b>Diagnóstico del fallo:</b><br />{deployment.error_summary}</p>}
+    {deployment?.warning_summary && <p className="notice deployment-warning" role="status"><b>Aviso del despliegue:</b><br />{deployment.warning_summary}</p>}
     {error && <p className="error" role="alert">{error}</p>}
     <small className="field-hint">El despliegue usa contenedores Spring y PostgreSQL aislados. Detener o reconstruir elimina su volumen de datos.</small>
     <div className="deployment-actions"><button disabled={busy || BUSY_STATUSES.includes(status)} onClick={() => action("POST")}>Desplegar / reconstruir</button>{running && <button className="ghost" onClick={() => window.open(deployment.url, "_blank", "noopener,noreferrer")}>Abrir API</button>}</div>

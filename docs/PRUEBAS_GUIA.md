@@ -74,7 +74,7 @@ La suite corre en Python 3.12 dentro de Docker (el Python 3.14 de Windows no sir
 ```
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo:ro" uml-backend-test:py312 bash -c 'cd /repo && tar --exclude=node_modules --exclude=.git --exclude=mobile --exclude=.atl --exclude=dist -cf - . | tar -xf - -C /work && cd /work/backend && python -m pytest -q 2>&1 | tail -3'
 ```
-- [ ] Resultado esperado: **`21 failed, 236 passed`**.
+- [ ] Resultado esperado: **`21 failed, 280 passed`**.
 - [ ] Los 21 que fallan son **los mismos de antes de empezar** (no los causamos): 18 tests de contrato obsoletos que comparan texto exacto del frontend, 2 de XMI porque falta un archivo de ejemplo en el repo, y 1 de `class_patch_contract`. Si el número de fallos sube de 21, algo se rompió.
 - Archivos de pruebas nuevos: `test_chat_api.py`, `test_activity_log.py`, `test_ai_brain.py`, `test_digest.py`.
 
@@ -109,14 +109,34 @@ El botón **Chat** ahora abre un **panel acoplado a la derecha** (empuja el lien
 | 2.14 | Abrir el chat | Se abre a la derecha en **Diseño** y el lienzo se achica |
 | 2.15 | Pulsar ☰ | Lista con **Diseño**, **Desarrollo** y **Test** (sin "Nuevo chat") |
 | 2.16 | En Desarrollo, A escribe "hola" | B, con el panel en **Diseño**, ve un **número de no leídos** junto a Desarrollo al pulsar ☰ (y en el botón si el panel está cerrado); en Diseño **no** aparece ese mensaje |
-| 2.17 | En Diseño: `@ia creá una clase Pedido` | La clase se crea (solo Diseño edita) |
+| 2.17 | En Diseño: `@ia creá una clase Pedido` | La clase se crea (Diseño y Desarrollo editan; Test no) |
 | 2.18 | En Desarrollo: `@ia explicame los endpoints que va a tener el backend` | Responde con las rutas CRUD de **tus** clases (`GET/POST/PUT/DELETE`), capas y qué falta |
-| 2.19 | En Desarrollo o Test: `@ia creá una clase Otra` | **No crea nada** y dice que ese chat es de consulta y que los cambios se piden en Diseño |
+| 2.19 | En **Test**: `@ia creá una clase Otra` | **No crea nada** y dice que ese chat es de consulta y que los cambios se piden en Diseño o Desarrollo |
 | 2.20 | En Test: `@ia qué casos de prueba hacemos para Pedido` | Propone casos felices, de borde y de error |
 | 2.21 | Pedirle algo a la IA en Desarrollo y cambiar a Diseño mientras piensa | El "La IA está respondiendo…" aparece solo en **Desarrollo** (y puntitos junto a su nombre en ☰) |
 | 2.22 | Escribir un borrador en Diseño, cambiar a Test y volver | El borrador de cada chat se **conserva** |
 | 2.23 | Recargar (`F5`) | Cada chat mantiene **sus** mensajes; los mensajes de antes de esta mejora quedan en Diseño |
 | 2.24 | `POST /diagrams/<id>/chat` con `"channel": "otro"` en `/docs` | `422` |
+
+### 2.c Endpoints diseñados por la IA (chat Desarrollo) y despliegue híbrido
+
+La IA puede diseñar **lógica de negocio** (endpoints) en el chat **Desarrollo**. Se guardan como especificaciones (tabla `endpoint_specs`), nacen **Pendientes** y solo los **Aprobados** se generan y se despliegan junto al CRUD. Hay dos formas: *estructurada* (buscar por campo, contar, sumar un campo, cambiar un campo a un valor fijo; código predecible) y *personalizada* (la IA escribe el cuerpo de un método Java; es lo único que puede no compilar).
+
+Necesitás una clase con atributos, por ejemplo **Cliente** con `email` (string), `total` (decimal) y `activo` (boolean).
+
+| # | Hacé esto | Debería pasar |
+|---|---|---|
+| 2.25 | En Desarrollo: `@ia necesito buscar clientes por email` | Responde "Propuse el endpoint GET /api/clientes/por-email … pendiente de aprobación". Sobre la lista de mensajes aparece la barra **«1 endpoint · 0 aprobados · 1 pendiente»** con el endpoint en amarillo |
+| 2.26 | Con el endpoint Pendiente, desplegá (botón Desplegar) y abrí la API en `/api/clientes/por-email?value=x` | **404**: una propuesta no se despliega |
+| 2.27 | Pulsá **Aprobar** en el endpoint (lo puede hacer un editor; un viewer no ve los botones) | Pasa a verde "Aprobado". Los demás ven el cambio **al instante** |
+| 2.28 | Volvé a desplegar y probá `GET /api/clientes/por-email?value=a@b.com` | Devuelve `[]` o los clientes con ese email: **el endpoint de la IA está desplegado** junto al CRUD |
+| 2.29 | `@ia necesito sumar el total de todos los clientes` y `@ia agregá un endpoint para activar un cliente` (aprobalos y desplegá) | `GET /api/clientes/total-total` devuelve la suma; `POST /api/clientes/{id}/activar` pone `activo = true` |
+| 2.30 | `@ia hacé un endpoint que aplique un descuento porcentual al total de un cliente` (lógica propia → "Java de la IA") | Lo propone como **«Código personalizado (Java de la IA)»**. Aprobalo y desplegá: funciona o avisa (2.31) |
+| 2.31 | (Forzar un error) pedile: `@ia hacé un endpoint personalizado /roto que devuelva un Cliente usando una variable llamada noExiste` y aprobalo | El despliegue **termina igual en `running` con el CRUD**. En el chat **Desarrollo** aparece un mensaje ⚠ "El despliegue usó solo el CRUD porque los endpoints aprobados no compilaron… ClienteService.java línea N: cannot find symbol (variable noExiste)". El panel de despliegue muestra el **Aviso del despliegue** con lo mismo |
+| 2.32 | Pulsá **Eliminar** sobre el endpoint roto y desplegá otra vez | Se despliega sin aviso con los demás endpoints |
+| 2.33 | En **Diseño**, pedí un endpoint | Dice que los endpoints se diseñan en el chat Desarrollo y no guarda nada |
+| 2.34 | En `/docs`: `PATCH /endpoints/<id>` con `{"status": "otro"}` | `422` |
+| 2.35 | Exportar ZIP | El `ClienteService.java` y `ClienteController.java` del ZIP incluyen **solo** los endpoints aprobados |
 
 ---
 

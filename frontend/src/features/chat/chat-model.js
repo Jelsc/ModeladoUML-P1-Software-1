@@ -2,10 +2,10 @@
 export const CHAT_PAGE_SIZE = 50;
 export const CHAT_MAX_LENGTH = 2000;
 
-// Every diagram has exactly three fixed team chats served by the same AI (ids match the backend). Only "diseno" lets the AI edit the diagram.
+// Every diagram has exactly three fixed team chats served by the same AI (ids match the backend). The AI edits the diagram in "diseno" and "desarrollo"; "test" is consultation only.
 export const CHANNELS = [
   { id: "diseno", label: "Diseño", hint: "Cambios y decisiones del diagrama", placeholder: "Pida un cambio o escriba al equipo (@ia para hablar con la IA)", aiEdits: true },
-  { id: "desarrollo", label: "Desarrollo", hint: "Flujo de métodos y endpoints del backend generado", placeholder: "Pregunte por el backend generado (@ia para hablar con la IA)", aiEdits: false },
+  { id: "desarrollo", label: "Desarrollo", hint: "Endpoints y lógica del backend generado", placeholder: "Pida endpoints o lógica de negocio (@ia para hablar con la IA)", aiEdits: true },
   { id: "test", label: "Test", hint: "Casos de prueba y verificaciones", placeholder: "Plantee pruebas (@ia para hablar con la IA)", aiEdits: false },
 ];
 export const DEFAULT_CHANNEL = "diseno";

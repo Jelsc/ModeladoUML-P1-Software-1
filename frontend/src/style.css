@@ -1408,6 +1408,24 @@ select:focus {
 .board-chat-channel.active { border-color: var(--focus); }
 .board-chat-badge.inline { position: static; flex: none; }
 .board-chat-channels-note { margin: 12px 4px 0; color: var(--text-muted); font-size: .78rem; }
+.board-endpoints { flex: none; max-height: 45%; padding: 6px 12px; overflow-y: auto; border-top: 1px solid var(--line); font-size: .85rem; }
+.board-endpoints summary { cursor: pointer; font-weight: 600; }
+.board-endpoints ul { display: grid; gap: 8px; margin: 8px 0 4px; padding: 0; list-style: none; }
+.board-endpoints-empty { margin: 6px 0 0; color: var(--text-muted); }
+.board-endpoint { padding: 8px 10px; background: var(--panel-raised); border: 1px solid var(--line); border-radius: 8px; }
+.board-endpoint.proposed { border-left: 3px solid #e3b341; }
+.board-endpoint.approved { border-left: 3px solid #4caf7d; }
+.board-endpoint-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.board-endpoint-head code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-endpoint-method { flex: none; padding: 1px 6px; border-radius: 4px; background: var(--line); font-size: .7rem; font-weight: 700; }
+.board-endpoint-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-top: 4px; color: var(--text-secondary); font-size: .78rem; }
+.board-endpoint-status { margin-left: auto; font-weight: 600; }
+.board-endpoint-status.proposed { color: #b8860b; }
+.board-endpoint-status.approved { color: #2e7d57; }
+.board-endpoint-description { margin: 4px 0 0; color: var(--text-muted); font-size: .78rem; overflow-wrap: anywhere; }
+.board-endpoint-actions { display: flex; gap: 6px; margin-top: 6px; }
+.board-endpoint-actions button { padding: 3px 10px; font-size: .78rem; }
+.deployment-warning { white-space: pre-line; overflow-wrap: anywhere; }
 @media (max-width: 700px) {
   .app-shell.chat-docked { margin-right: 0; }
   .board-chat-panel.board-chat-dock { width: 100vw; }

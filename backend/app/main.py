@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal, get_db
-from .models import ActivityLog, Attribute, ChatMessage, Deployment, Diagram, DiagramMember, DiagramVisit, Method, Relation, RelationType, UmlClass, User
+from .models import ActivityLog, Attribute, ChatMessage, Deployment, Diagram, DiagramMember, DiagramVisit, EndpointSpec, Method, Relation, RelationType, UmlClass, User
 from .permissions import access, can_edit, member_access, owner
 from .security import create_token, current_user, hash_password
 from .collaboration import collaboration
@@ -23,6 +23,7 @@ from .assistant.gemini import try_interpret
 from .assistant import brain
 from .vision import router as vision_router
 from exporters.uml import export_zip
+from exporters.validator import entity_route_path
 from exporters.association_class import association_fk_names
 from exporters.sql_ddl import ddl_to_diagram, generate_ddl, parse_ddl
 from exporters.postman import generate_postman_collection
@@ -158,6 +159,12 @@ def relation_json(r):
         return {"id": str(endpoint_id) if endpoint_id else None, "class": uml_class.name, "class_name": uml_class.name, "type": endpoint_type, "name": item.name if item else "Unknown endpoint", "data_type": item.type if item and endpoint_type == "attribute" else None, "return_type": item.return_type if item and endpoint_type == "method" else None}
     return {"id": str(r.id), "source_id": str(r.source_id), "target_id": str(r.target_id), "from": r.source.name, "to": r.target.name, "source_endpoint": str(r.source_endpoint) if r.source_endpoint else None, "target_endpoint": str(r.target_endpoint) if r.target_endpoint else None, "source_endpoint_type": r.source_endpoint_type, "target_endpoint_type": r.target_endpoint_type, "source_endpoint_info": endpoint(r.source_endpoint, r.source_endpoint_type, r.source), "target_endpoint_info": endpoint(r.target_endpoint, r.target_endpoint_type, r.target), "type": r.type.value, "label": r.label, "source_multiplicity": r.source_multiplicity, "target_multiplicity": r.target_multiplicity, "association_class_id": str(r.association_class_id) if r.association_class_id else None}
 def diagram_json(d): return {"id": str(d.id), "title": d.title, "classes": [class_json(c) for c in d.classes], "relations": [relation_json(r) for r in d.relations]}
+def spec_source(e): return {"class_name": e.uml_class.name, "name": e.name, "kind": e.kind, "http_method": e.http_method, "path": e.path, "field": e.field, "value": e.value, "params": e.params or [], "return_type": e.return_type, "java_body": e.java_body, "description": e.description}
+def project_source(d):
+    """Diagram snapshot used to export and deploy: the diagram plus the AI endpoints the team approved."""
+    source = diagram_json(d); approved = [spec_source(e) for e in d.endpoint_specs if e.status == "approved" and e.uml_class]
+    if approved: source["endpoints"] = approved
+    return source
 
 @app.post("/assistant/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...), user=Depends(current_user)):
@@ -257,7 +264,7 @@ def persist_sql_diagram(db, diagram, next_diagram):
 def user_json(user): return {"id": user.id, "email": user.email, "name": user.name, "role": user.role, "active": user.active}
 def deployment_json(item):
     if not item: return None
-    return {"id": item.id, "status": item.status, "slug": item.slug, "url": item.url, "error_summary": item.error_summary, "project_hash": item.project_hash, "created_at": item.created_at, "updated_at": item.updated_at}
+    return {"id": item.id, "status": item.status, "slug": item.slug, "url": item.url, "error_summary": item.error_summary, "warning_summary": getattr(item, "warning_summary", None), "project_hash": item.project_hash, "created_at": item.created_at, "updated_at": item.updated_at}
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 def member_json(member, is_owner=False):
     account = member if is_owner else member.user
@@ -437,6 +444,31 @@ def get_ai_settings(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=D
 async def set_ai_settings(diagram_id: uuid.UUID, body: AiSettingsIn, db: Session = Depends(get_db), user=Depends(current_user)):
     d = owner(db, user, diagram_id); d.ai_enabled, d.ai_can_edit = body.ai_enabled, body.ai_can_edit; db.commit()
     payload = {"ai_enabled": d.ai_enabled, "ai_can_edit": d.ai_can_edit}; await publish(d.id, "ai.settings", payload); return payload
+def endpoint_json(e): return {"id": str(e.id), "diagram_id": str(e.diagram_id), "class_id": str(e.class_id), "class_name": e.uml_class.name if e.uml_class else None, "route": f"{entity_route_path(e.uml_class.name)}{e.path}" if e.uml_class else e.path, "name": e.name, "kind": e.kind, "http_method": e.http_method, "path": e.path, "field": e.field, "value": e.value, "description": e.description, "params": e.params or [], "return_type": e.return_type, "has_custom_code": bool(e.java_body), "status": e.status, "created_by": e.author.name if e.author else None, "created_at": e.created_at.isoformat() if e.created_at else None}
+class EndpointStatusIn(BaseModel):
+    status: str
+    @field_validator("status")
+    @classmethod
+    def valid_status(cls, value):
+        if value not in ("proposed", "approved"): raise ValueError("Estado inválido")
+        return value
+@app.get("/diagrams/{diagram_id}/endpoints")
+def list_endpoints(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
+    member_access(db, user, diagram_id); return [endpoint_json(e) for e in db.query(EndpointSpec).filter_by(diagram_id=diagram_id).order_by(EndpointSpec.created_at, EndpointSpec.name).all()]
+def editable_endpoint(db, user, endpoint_id):
+    e = db.get(EndpointSpec, endpoint_id)
+    if not e: raise HTTPException(404, "Endpoint no encontrado")
+    can_edit(db, user, e.diagram_id); return e
+@app.patch("/endpoints/{endpoint_id}")
+async def set_endpoint_status(endpoint_id: uuid.UUID, body: EndpointStatusIn, db: Session = Depends(get_db), user=Depends(current_user)):
+    e = editable_endpoint(db, user, endpoint_id); e.status = body.status
+    log_activity(db, e.diagram_id, user, "endpoint.approved" if body.status == "approved" else "endpoint.proposed", "endpoint", e.id, f"{actor_name(user)} {'aprobó' if body.status == 'approved' else 'devolvió a propuesta'} el endpoint {e.name} de {e.uml_class.name}")
+    db.commit(); payload = endpoint_json(e); await publish(e.diagram_id, "ai.endpoints", {"endpoint_id": payload["id"], "change": body.status}); return payload
+@app.delete("/endpoints/{endpoint_id}")
+async def delete_endpoint(endpoint_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
+    e = editable_endpoint(db, user, endpoint_id); diagram_id = e.diagram_id
+    log_activity(db, diagram_id, user, "endpoint.deleted", "endpoint", e.id, f"{actor_name(user)} eliminó el endpoint {e.name} de {e.uml_class.name}"); db.delete(e); db.commit()
+    await publish(diagram_id, "ai.endpoints", {"endpoint_id": str(endpoint_id), "change": "deleted"}); return {"ok": True}
 def activity_json(a): return {"id": str(a.id), "diagram_id": str(a.diagram_id), "actor_user_id": a.actor_user_id, "actor_name": a.actor.name if a.actor else None, "actor_kind": a.actor_kind, "action": a.action, "entity_type": a.entity_type, "entity_id": a.entity_id, "summary": a.summary, "created_at": a.created_at.isoformat() if a.created_at else None}
 @app.get("/diagrams/{diagram_id}/activity")
 def list_activity(diagram_id: uuid.UUID, before: datetime | None = None, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user=Depends(current_user)):
@@ -563,7 +595,7 @@ async def delete_relation(relation_id: uuid.UUID, db: Session = Depends(get_db),
     await publish(diagram_id, "relation.deleted", {"relation_id": str(relation_id)}); return {"ok": True}
 @app.post("/diagrams/{diagram_id}/export")
 def export(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
-    d = owned(db, user, diagram_id); return StreamingResponse(iter([export_zip(diagram_json(d))]), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="uml-{diagram_id}.zip"'})
+    d = owned(db, user, diagram_id); return StreamingResponse(iter([export_zip(project_source(d))]), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="uml-{diagram_id}.zip"'})
 
 @app.get("/diagrams/{diagram_id}/xmi")
 def export_xmi_route(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
@@ -624,14 +656,15 @@ def start_deployment(diagram_id: uuid.UUID, tasks: BackgroundTasks, db: Session 
         current.status = "queued"
         current.url = None
         current.error_summary = None
-        current.project_json = json.dumps(diagram_json(diagram), ensure_ascii=False)
+        current.warning_summary = None
+        current.project_json = json.dumps(project_source(diagram), ensure_ascii=False)
         current.updated_at = datetime.now(timezone.utc)
     else:
         try:
             slug = slugify(diagram.title, str(diagram.id))
         except ValueError as exc:
             raise HTTPException(422, str(exc))
-        current = Deployment(diagram_id=diagram.id, slug=slug, status="queued", project_json=json.dumps(diagram_json(diagram), ensure_ascii=False))
+        current = Deployment(diagram_id=diagram.id, slug=slug, status="queued", project_json=json.dumps(project_source(diagram), ensure_ascii=False))
         db.add(current)
     db.commit(); db.refresh(current)
     tasks.add_task(deploy, current.id)

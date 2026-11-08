@@ -1,6 +1,6 @@
 import enum, uuid
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, true
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
@@ -15,6 +15,7 @@ class Diagram(Base):
     owner = relationship("User"); classes = relationship("UmlClass", cascade="all, delete-orphan", back_populates="diagram"); relations = relationship("Relation", cascade="all, delete-orphan", back_populates="diagram"); members = relationship("DiagramMember", cascade="all, delete-orphan", back_populates="diagram"); deployment = relationship("Deployment", uselist=False, cascade="all, delete-orphan", back_populates="diagram")
     chat_messages = relationship("ChatMessage", cascade="all, delete-orphan", passive_deletes=True, back_populates="diagram")
     activity = relationship("ActivityLog", cascade="all, delete-orphan", passive_deletes=True)
+    endpoint_specs = relationship("EndpointSpec", cascade="all, delete-orphan", passive_deletes=True, back_populates="diagram", order_by="EndpointSpec.created_at")
 class DiagramMember(Base):
     __tablename__ = "diagram_members"
     __table_args__ = (UniqueConstraint("diagram_id", "user_id", name="uq_diagram_member"),)
@@ -44,7 +45,7 @@ class Deployment(Base):
     status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
     slug: Mapped[str] = mapped_column(String(60), nullable=False)
     container_name: Mapped[str | None] = mapped_column(String(100)); db_container_name: Mapped[str | None] = mapped_column(String(100)); image_name: Mapped[str | None] = mapped_column(String(100))
-    url: Mapped[str | None] = mapped_column(String(255)); error_summary: Mapped[str | None] = mapped_column(String(500)); project_hash: Mapped[str | None] = mapped_column(String(64)); project_json: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str | None] = mapped_column(String(255)); error_summary: Mapped[str | None] = mapped_column(String(500)); warning_summary: Mapped[str | None] = mapped_column(String(1500)); project_hash: Mapped[str | None] = mapped_column(String(64)); project_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False); updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     diagram = relationship("Diagram", back_populates="deployment")
 
@@ -62,3 +63,9 @@ class ActivityLog(Base):
 class DiagramVisit(Base):
     __tablename__ = "diagram_visits"
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True); diagram_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"), primary_key=True); last_seen_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False)
+class EndpointSpec(Base):
+    """An endpoint (business logic) designed by the team AI. Starts as "proposed"; only "approved" specs are generated and deployed."""
+    __tablename__ = "endpoint_specs"
+    __table_args__ = (UniqueConstraint("class_id", "name", name="uq_endpoint_class_name"), Index("ix_endpoint_specs_diagram", "diagram_id"))
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4); diagram_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"), nullable=False); class_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("uml_classes.id", ondelete="CASCADE"), nullable=False); name: Mapped[str] = mapped_column(String(60), nullable=False); kind: Mapped[str] = mapped_column(String(20), nullable=False); http_method: Mapped[str] = mapped_column(String(6), nullable=False); path: Mapped[str] = mapped_column(String(160), nullable=False); field: Mapped[str | None] = mapped_column(String(120), nullable=True); value: Mapped[str | None] = mapped_column(String(120), nullable=True); description: Mapped[str] = mapped_column(String(200), default="", server_default="", nullable=False); params: Mapped[list] = mapped_column(JSON, default=list, nullable=False); return_type: Mapped[str | None] = mapped_column(String(12), nullable=True); java_body: Mapped[str | None] = mapped_column(Text, nullable=True); status: Mapped[str] = mapped_column(String(10), default="proposed", server_default="proposed", nullable=False); created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True); created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False)
+    diagram = relationship("Diagram", back_populates="endpoint_specs"); uml_class = relationship("UmlClass"); author = relationship("User")

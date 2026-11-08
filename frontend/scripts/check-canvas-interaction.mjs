@@ -7,6 +7,19 @@ const collaboration = readFileSync(new URL('../src/features/canvas/useCanvasColl
 const interaction = `${pages}\n${gestures}\n${collaboration}`;
 const styles = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
 
+// Moving a class or a relation must not open the inspector: only a real click selects.
+import { CLICK_MOVE_TOLERANCE, isClick, pressPoint } from '../src/features/canvas/click-guard.js';
+const at = (x, y) => ({ clientX: x, clientY: y });
+assert.equal(isClick(pressPoint(at(100, 100)), at(100, 100)), true, 'a still click selects');
+assert.equal(isClick(pressPoint(at(100, 100)), at(100 + CLICK_MOVE_TOLERANCE, 100)), true, 'a tiny hand tremor still counts as a click');
+assert.equal(isClick(pressPoint(at(100, 100)), at(180, 100)), false, 'a drag does not select');
+assert.equal(isClick(pressPoint(at(100, 100)), at(103, 105)), false, 'diagonal distance is measured as a real distance');
+assert.equal(isClick(null, at(5, 5)), true, 'keyboard activation has no press and must keep working');
+const cardSource = readFileSync(new URL('../src/features/canvas/ClassCard.jsx', import.meta.url), 'utf8');
+const relationSource = readFileSync(new URL('../src/features/canvas/RelationLayer.jsx', import.meta.url), 'utf8');
+assert.match(cardSource, /onPointerDown=\{\(e\) => \{ press\.current = pressPoint\(e\);/); assert.match(cardSource, /if \(clicked\) onSelect\(item\.id\)/);
+assert.match(relationSource, /onPointerDown=\{\(event\) => \{ press\.current = pressPoint\(event\);/); assert.match(relationSource, /if \(clicked\) onSelect\(relation\.id\)/);
+
 assert.match(pages, /className="zoom-controls"/);
 assert.match(interaction, /if \(event\.target\.closest\("\.zoom-controls"\)\) return/);
 assert.match(interaction, /event\.preventDefault\(\);[\s\S]{0,180}changeZoom\(/);

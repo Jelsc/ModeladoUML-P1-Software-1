@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AiSettings } from "./AiSettings.jsx";
+import { EndpointList } from "./EndpointList.jsx";
 import { CHANNELS, CHAT_MAX_LENGTH, applyMention, authorLabel, canSend, channelOf, clipText, formatChatTime, isOwnMessage, mentionOpen, parseAiMessage, replyPreview, thinkingLabel } from "./chat-model.js";
 
 function AiMessageBody({ content }) {
@@ -13,7 +14,7 @@ function MenuIcon() {
 }
 
 // Docked side panel (like a browser's AI sidebar): one fixed chat per area of the project, all collaborative and answered by the same AI.
-export function ChatPanel({ channel, onChannel, unreadByChannel = {}, messages, loading, hasMore, error, sending, thinking = [], aiSettings = null, currentUserId, onSend, onLoadOlder, onDismissError, onClose }) {
+export function ChatPanel({ channel, onChannel, unreadByChannel = {}, endpoints = null, messages, loading, hasMore, error, sending, thinking = [], aiSettings = null, currentUserId, onSend, onLoadOlder, onDismissError, onClose }) {
   const [drafts, setDrafts] = useState({}), [replyTo, setReplyTo] = useState(null), [menuOpen, setMenuOpen] = useState(false);
   const listRef = useRef(null), inputRef = useRef(null), followBottom = useRef(true);
   const current = channelOf(channel), draft = drafts[current.id] || "", setDraft = (value) => setDrafts((all) => ({ ...all, [current.id]: value }));
@@ -55,7 +56,7 @@ export function ChatPanel({ channel, onChannel, unreadByChannel = {}, messages, 
           {unread > 0 && <span className="board-chat-badge inline" aria-label={`${unread} mensajes sin leer`}>{unread > 99 ? "99+" : unread}</span>}
         </button></li>;
       })}</ul>
-      <p className="board-chat-channels-note">Los tres chats son del equipo, se crean con el diagrama y usan la misma IA. Solo en Diseño la IA puede modificar el diagrama.</p>
+      <p className="board-chat-channels-note">Los tres chats son del equipo, se crean con el diagrama y usan la misma IA. La IA modifica el diagrama en Diseño y Desarrollo; Test es solo de consulta.</p>
     </nav> : <>
       <ol ref={listRef} className="board-chat-list" role="log" aria-live="polite" aria-label="Mensajes" onScroll={onScroll}>
         {hasMore && <li className="board-chat-older"><button type="button" className="ghost" onClick={loadOlder}>Cargar mensajes anteriores</button></li>}
@@ -71,6 +72,7 @@ export function ChatPanel({ channel, onChannel, unreadByChannel = {}, messages, 
           </li>;
         })}
       </ol>
+      {current.id === "desarrollo" && endpoints && <EndpointList {...endpoints} />}
       {thinkingText && <p className="board-chat-thinking" role="status"><span className="board-chat-dots" aria-hidden="true"><i /><i /><i /></span>{thinkingText}</p>}
       {aiSettings && <AiSettings {...aiSettings} />}
       {error && <p className="error board-chat-error" role="alert">{error} <button type="button" className="ghost" onClick={onDismissError}>Ocultar</button></p>}
