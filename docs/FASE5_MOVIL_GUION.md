@@ -139,8 +139,8 @@ Reglas de diseño:
 | `GET /diagrams` | Mis diagramas | — | `[{"id","title","updated_at","is_owner","member_role"}]` (`member_role` es `null` si sos dueño, o `"editor"`/`"viewer"`) |
 | `GET /diagrams/{id}` | Diagrama completo | — | ver 5.2 |
 | `GET /diagrams/{id}/members` | Equipo | — | `[{"id","email","name","role":"owner\|editor\|viewer","is_owner"}]` |
-| `GET /diagrams/{id}/chat?before=<ISO>&limit=<1..200>` | Historial (orden **ascendente**) | `limit` por defecto 50; `before` = `created_at` del mensaje más viejo que ya tenés (**url-encode** el `+` de la zona horaria) | `[ChatMessage]` |
-| `POST /diagrams/{id}/chat` | Enviar mensaje | `{"content": "1..2000 chars", "reply_to_id": "uuid\|null", "ai_read_only": true}` | `ChatMessage` (201). Si el texto contiene `@ia` (o respondés a un mensaje de la IA), el backend despierta a la IA en segundo plano |
+| `GET /diagrams/{id}/chat?channel=<diseno\|desarrollo\|test>&before=<ISO>&limit=<1..200>` | Historial (orden **ascendente**) de **un** chat. Cada diagrama tiene **3 chats fijos** (Diseño, Desarrollo, Test), colaborativos y con la misma IA; no hay historial de chats ni se crean nuevos | `channel` por defecto `diseno` (otro valor → `422`); `limit` por defecto 50; `before` = `created_at` del mensaje más viejo que ya tenés (**url-encode** el `+` de la zona horaria) | `[ChatMessage]` |
+| `POST /diagrams/{id}/chat` | Enviar mensaje | `{"content": "1..2000 chars", "reply_to_id": "uuid\|null", "ai_read_only": true, "channel": "diseno\|desarrollo\|test"}` (`channel` por defecto `diseno`; `reply_to_id` debe ser de ese mismo chat) | `ChatMessage` (201). Si el texto contiene `@ia` (o respondés a un mensaje de la IA), el backend despierta a la IA en segundo plano |
 | `GET /diagrams/{id}/ai-settings` | Estado de la IA | — | `{"ai_enabled": bool, "ai_can_edit": bool}` |
 | `GET /diagrams/{id}/digest` | Novedades desde la última visita (**no** mueve el marcador) | — | `{"since": ISO\|null, "activity": [ActivityItem], "activity_total": n, "chat_total": n, "by_actor": {"Beto": 2, "IA": 1}}` |
 | `POST /diagrams/{id}/seen` | Marcar diagrama como visto | — | `{"last_seen_at": ISO}` |
@@ -155,7 +155,7 @@ Reglas de diseño:
 // ChatMessage
 { "id":"uuid", "diagram_id":"uuid", "author_user_id": 3 /*null si es la IA o usuario borrado*/,
   "author_name":"Beto" /*null si es la IA*/, "author_kind":"user" | "ai",
-  "content":"texto", "reply_to_id":"uuid|null", "created_at":"2026-11-07T15:04:05.123456+00:00" }
+  "content":"texto", "reply_to_id":"uuid|null", "channel":"diseno|desarrollo|test", "created_at":"2026-11-07T15:04:05.123456+00:00" }
 
 // ActivityItem
 { "id","diagram_id","actor_user_id","actor_name","actor_kind":"user|ai",
@@ -183,7 +183,7 @@ Los objetos traen **más campos** de los listados (extremos de relación, etc.):
 | `event` | Campos | Qué hacer en la app |
 |---|---|---|
 | `chat.message` | `message: ChatMessage` | Agregar al chat (**deduplicar por `id`**: tu propio POST también devuelve el mensaje) |
-| `ai.thinking` | `requester` (nombre), `message_id` (id de la pregunta) | Mostrar "La IA está respondiendo a *requester*…" |
+| `ai.thinking` | `requester` (nombre), `message_id` (id de la pregunta), `channel` (el chat donde se preguntó; mostrarlo solo en ese chat) | Mostrar "La IA está respondiendo a *requester*…" |
 | `ai.done` | `message_id` (id de la respuesta), `trigger_id` (id de la pregunta), `applied` (n), `changed_class_ids[]`, `changed_relation_ids[]` | Quitar el indicador cuyo `message_id == trigger_id`; resaltar 6 s esas clases/relaciones en la pestaña Diagrama |
 | `ai.settings` | `ai_enabled`, `ai_can_edit` | Actualizar el estado de la IA |
 | `class.created`, `class.updated`, `class.deleted`, `relation.created`, `relation.updated`, `relation.deleted`, `member.*` | (varios) | **Refrescar** `GET /diagrams/{id}` (con *debounce* de ~300 ms; lo hace igual la web) |

@@ -74,7 +74,7 @@ La suite corre en Python 3.12 dentro de Docker (el Python 3.14 de Windows no sir
 ```
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo:ro" uml-backend-test:py312 bash -c 'cd /repo && tar --exclude=node_modules --exclude=.git --exclude=mobile --exclude=.atl --exclude=dist -cf - . | tar -xf - -C /work && cd /work/backend && python -m pytest -q 2>&1 | tail -3'
 ```
-- [ ] Resultado esperado: **`21 failed, 229 passed`**.
+- [ ] Resultado esperado: **`21 failed, 236 passed`**.
 - [ ] Los 21 que fallan son **los mismos de antes de empezar** (no los causamos): 18 tests de contrato obsoletos que comparan texto exacto del frontend, 2 de XMI porque falta un archivo de ejemplo en el repo, y 1 de `class_patch_contract`. Si el número de fallos sube de 21, algo se rompió.
 - Archivos de pruebas nuevos: `test_chat_api.py`, `test_activity_log.py`, `test_ai_brain.py`, `test_digest.py`.
 
@@ -99,6 +99,24 @@ En A, B y C: botón **Chat** (abajo a la derecha, encima del zoom).
 | 2.11 | Girar la rueda del mouse **dentro** del chat | Hace scroll del chat; **no** hace zoom al lienzo |
 | 2.12 | (Paginación) Enviar más de 50 mensajes y recargar | Aparece "Cargar mensajes anteriores" y trae los más viejos sin duplicar |
 | 2.13 | Un usuario que **no** es miembro (otra cuenta) intenta `GET /diagrams/<id>/chat` en `/docs` | `403` |
+
+### 2.b Los tres chats fijos (panel lateral)
+
+El botón **Chat** ahora abre un **panel acoplado a la derecha** (empuja el lienzo, no lo tapa). Las 3 líneas (☰) de la esquina superior izquierda muestran los chats. No hay historial de chats ni "Nuevo chat": son **tres chats fijos** que existen con el diagrama, colaborativos y atendidos por la misma IA.
+
+| # | Hacé esto | Debería pasar |
+|---|---|---|
+| 2.14 | Abrir el chat | Se abre a la derecha en **Diseño** y el lienzo se achica |
+| 2.15 | Pulsar ☰ | Lista con **Diseño**, **Desarrollo** y **Test** (sin "Nuevo chat") |
+| 2.16 | En Desarrollo, A escribe "hola" | B, con el panel en **Diseño**, ve un **número de no leídos** junto a Desarrollo al pulsar ☰ (y en el botón si el panel está cerrado); en Diseño **no** aparece ese mensaje |
+| 2.17 | En Diseño: `@ia creá una clase Pedido` | La clase se crea (solo Diseño edita) |
+| 2.18 | En Desarrollo: `@ia explicame los endpoints que va a tener el backend` | Responde con las rutas CRUD de **tus** clases (`GET/POST/PUT/DELETE`), capas y qué falta |
+| 2.19 | En Desarrollo o Test: `@ia creá una clase Otra` | **No crea nada** y dice que ese chat es de consulta y que los cambios se piden en Diseño |
+| 2.20 | En Test: `@ia qué casos de prueba hacemos para Pedido` | Propone casos felices, de borde y de error |
+| 2.21 | Pedirle algo a la IA en Desarrollo y cambiar a Diseño mientras piensa | El "La IA está respondiendo…" aparece solo en **Desarrollo** (y puntitos junto a su nombre en ☰) |
+| 2.22 | Escribir un borrador en Diseño, cambiar a Test y volver | El borrador de cada chat se **conserva** |
+| 2.23 | Recargar (`F5`) | Cada chat mantiene **sus** mensajes; los mensajes de antes de esta mejora quedan en Diseño |
+| 2.24 | `POST /diagrams/<id>/chat` con `"channel": "otro"` en `/docs` | `422` |
 
 ---
 

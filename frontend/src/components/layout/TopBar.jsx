@@ -1,6 +1,7 @@
 import { useRef } from "react";
+import { ChatLauncher } from "../../features/chat/ChatLauncher.jsx";
 
-export function TopBar({ title, onBack, onExport, onExportXmi, onImportXmi, onAddClass, onMembers, onSql, sqlOpen = false, theme, onThemeToggle, onDeploy }) {
+export function TopBar({ title, onBack, onExport, onExportXmi, onImportXmi, onAddClass, onMembers, onSql, sqlOpen = false, theme, onThemeToggle, onDeploy, chat = null }) {
   const nextTheme = theme === "dark" ? "claro" : "oscuro";
   const menuRef = useRef(null);
   const closeMenu = () => { if (menuRef.current) menuRef.current.open = false; };
@@ -16,6 +17,7 @@ export function TopBar({ title, onBack, onExport, onExportXmi, onImportXmi, onAd
       {onImportXmi && <button className="ghost" role="menuitem" onClick={() => { closeMenu(); onImportXmi(); }}>Importar XMI</button>}
     </div></details>}
     {onDeploy && <button onClick={onDeploy}>Desplegar</button>}
+    {chat && <ChatLauncher onToggle={chat.onToggle} open={chat.open} unread={chat.unread} thinking={chat.thinking} />}
     <button className="ghost theme-toggle" onClick={onThemeToggle} title={`Activar modo ${nextTheme}`} aria-label={`Activar modo ${nextTheme}`}>{theme === "dark" ? "☼ Claro" : "☾ Oscuro"}</button>
   </header>;
 }

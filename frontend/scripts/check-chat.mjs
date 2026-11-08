@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CHAT_MAX_LENGTH, addThinking, applyMention, authorLabel, canSend, clipText, formatChatTime, isOwnMessage, mentionOpen, mergeMessages, oldestCreatedAt, parseAiMessage, removeThinking, replyPreview, thinkingLabel } from "../src/features/chat/chat-model.js";
+import { CHANNELS, CHAT_MAX_LENGTH, addThinking, applyMention, authorLabel, bumpUnread, canSend, channelOf, clearUnread, clipText, emptyChats, emptyUnread, formatChatTime, isOwnMessage, mentionOpen, mergeMessages, messageChannel, oldestCreatedAt, parseAiMessage, removeThinking, replyPreview, thinkingLabel, totalUnread } from "../src/features/chat/chat-model.js";
 
 const msg = (id, minute, extra = {}) => ({ id, created_at: `2026-01-01T12:${String(minute).padStart(2, "0")}:00+00:00`, content: id, author_kind: "user", author_user_id: 1, author_name: "Ana", ...extra });
 
@@ -60,7 +60,10 @@ assert.match(collaboration, /return \{[^}]*subscribe/);
 const board = read("../src/pages/board-canvas.jsx");
 assert.match(board, /useDiagramChat\(\{[^}]*subscribe: collaboration\.subscribe/);
 assert.match(board, /<ChatPanel /);
-assert.match(board, /<ChatLauncher /);
+assert.match(board, /chat=\{\{ open: chatOpen/, "the chat button lives in the top bar");
+const topBarSource = read("../src/components/layout/TopBar.jsx");
+assert.match(topBarSource, /<ChatLauncher /);
+assert.ok(topBarSource.indexOf("Desplegar") < topBarSource.indexOf("<ChatLauncher ") && topBarSource.indexOf("<ChatLauncher ") < topBarSource.indexOf("theme-toggle"), "chat button sits between Desplegar and the theme toggle");
 assert.doesNotMatch(board.split("\n").filter((line) => /assistant-overlay/.test(line)).join("\n"), /ChatPanel|ChatLauncher/, "chat must be available to read-only members too");
 const hook = read("../src/features/chat/useDiagramChat.js");
 assert.match(hook, /encodeURIComponent\(before\)/, "pagination cursor must be URL-encoded (timezone offsets contain +)");
@@ -105,4 +108,29 @@ assert.match(board, /useAiHighlight\(collaboration\.subscribe\)/);
 assert.match(board, /canManage: owner/, "only the owner gets the AI switches");
 assert.match(board, /aiHighlight\.classIds\.includes\(item\.id\)/);
 assert.doesNotMatch(read("../src/features/chat/ChatPanel.jsx") + read("../src/features/chat/AiSettings.jsx"), /dangerouslySetInnerHTML/);
+// Three fixed team chats: same AI, separated conversations. Only Diseño lets the AI edit the diagram.
+assert.deepEqual(CHANNELS.map((c) => c.id), ["diseno", "desarrollo", "test"]);
+assert.deepEqual(CHANNELS.map((c) => c.aiEdits), [true, false, false]);
+assert.equal(channelOf("desarrollo").label, "Desarrollo");
+assert.equal(channelOf("nope").id, "diseno", "unknown channel falls back to Diseño");
+assert.equal(messageChannel({}), "diseno", "messages without channel belong to Diseño");
+assert.equal(messageChannel({ channel: "test" }), "test");
+assert.deepEqual(Object.keys(emptyChats()), ["diseno", "desarrollo", "test"]);
+let unread = emptyUnread();
+unread = bumpUnread(bumpUnread(unread, "test"), "test"); unread = bumpUnread(unread, "desarrollo");
+assert.deepEqual(unread, { diseno: 0, desarrollo: 1, test: 2 }); assert.equal(totalUnread(unread), 3);
+assert.deepEqual(clearUnread(unread, "test"), { diseno: 0, desarrollo: 1, test: 0 }); assert.equal(clearUnread(unread, "diseno"), unread, "nothing to clear keeps the same object");
+// The thinking indicator is scoped to the chat where the question was asked.
+let scoped = addThinking([], { message_id: "q1", requester: "Ana", channel: "desarrollo" }); scoped = addThinking(scoped, { message_id: "q2", requester: "Beto" });
+assert.equal(thinkingLabel(scoped, "desarrollo"), "La IA está respondiendo a Ana..."); assert.equal(thinkingLabel(scoped, "diseno"), "La IA está respondiendo a Beto...", "no channel in the event means Diseño");
+assert.equal(thinkingLabel(scoped, "test"), "");
+// Wiring of the docked panel.
+assert.match(hookSource, /channel=\$\{id\}/, "history is requested per chat"); assert.match(hookSource, /channel: target/, "messages are sent to the active chat");
+assert.match(hookSource, /messageChannel\(event\.message\)/, "live messages go to their own chat");
+assert.match(board, /chat-docked/); assert.match(board, /<ChatPanel channel=\{chat\.channel\} onChannel=\{chat\.setChannel\}/);
+assert.match(board, /chat\.send\(SUMMARY_REQUEST, null, "diseno"\)/, "the digest summary is asked in Diseño");
+const dockedPanel = read("../src/features/chat/ChatPanel.jsx");
+assert.match(dockedPanel, /aria-label="Ver chats del diagrama"/); assert.match(dockedPanel, /CHANNELS\.map/);
+assert.doesNotMatch(dockedPanel, /Nuevo chat/, "chats are fixed: there is no 'new chat' nor chat history");
+assert.match(read("../src/style.css"), /\.app-shell\.chat-docked/);
 console.log("Chat checks passed.");

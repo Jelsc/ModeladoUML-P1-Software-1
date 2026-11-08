@@ -400,7 +400,12 @@ async def remove_member(diagram_id: uuid.UUID, user_id: int, db: Session = Depen
     if not member: raise HTTPException(404, "Miembro no encontrado")
     db.delete(member); db.commit(); await publish(d.id, "member.removed", {"user_id": user_id}); return {"ok": True}
 class ChatIn(BaseModel):
-    content: str; reply_to_id: uuid.UUID | None = None; ai_read_only: bool = False  # read-only clients (mobile) must never let the AI edit on their behalf
+    content: str; reply_to_id: uuid.UUID | None = None; ai_read_only: bool = False; channel: str = "diseno"  # read-only clients (mobile) must never let the AI edit on their behalf
+    @field_validator("channel")
+    @classmethod
+    def valid_channel(cls, value):
+        if value not in brain.CHANNELS: raise ValueError("Chat inexistente")
+        return value
     @field_validator("content")
     @classmethod
     def valid_content(cls, value):
@@ -408,17 +413,18 @@ class ChatIn(BaseModel):
         if not value: raise ValueError("El mensaje no puede estar vacío")
         if len(value) > 2000: raise ValueError("El mensaje no puede superar los 2000 caracteres")
         return value
-def chat_json(m): return {"id": str(m.id), "diagram_id": str(m.diagram_id), "author_user_id": m.author_user_id, "author_name": m.author.name if m.author else None, "author_kind": m.author_kind, "content": m.content, "reply_to_id": str(m.reply_to_id) if m.reply_to_id else None, "created_at": m.created_at.isoformat() if m.created_at else None}
+def chat_json(m): return {"id": str(m.id), "diagram_id": str(m.diagram_id), "author_user_id": m.author_user_id, "author_name": m.author.name if m.author else None, "author_kind": m.author_kind, "content": m.content, "reply_to_id": str(m.reply_to_id) if m.reply_to_id else None, "channel": m.channel, "created_at": m.created_at.isoformat() if m.created_at else None}
 @app.get("/diagrams/{diagram_id}/chat")
-def list_chat(diagram_id: uuid.UUID, before: datetime | None = None, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user=Depends(current_user)):
-    member_access(db, user, diagram_id); q = db.query(ChatMessage).filter_by(diagram_id=diagram_id)
+def list_chat(diagram_id: uuid.UUID, before: datetime | None = None, limit: int = Query(50, ge=1, le=200), channel: str = "diseno", db: Session = Depends(get_db), user=Depends(current_user)):
+    if channel not in brain.CHANNELS: raise HTTPException(422, "Chat inexistente")
+    member_access(db, user, diagram_id); q = db.query(ChatMessage).filter_by(diagram_id=diagram_id, channel=channel)
     if before: q = q.filter(ChatMessage.created_at < before)
     return [chat_json(m) for m in reversed(q.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit).all())]
 @app.post("/diagrams/{diagram_id}/chat", status_code=201)
 async def post_chat(diagram_id: uuid.UUID, body: ChatIn, background: BackgroundTasks, db: Session = Depends(get_db), user=Depends(current_user)):
-    d = member_access(db, user, diagram_id); parent = db.query(ChatMessage).filter_by(id=body.reply_to_id, diagram_id=d.id).first() if body.reply_to_id else None
+    d = member_access(db, user, diagram_id); parent = db.query(ChatMessage).filter_by(id=body.reply_to_id, diagram_id=d.id, channel=body.channel).first() if body.reply_to_id else None
     if body.reply_to_id and not parent: raise HTTPException(404, "Mensaje a responder no encontrado")
-    m = ChatMessage(diagram_id=d.id, author_user_id=user.id, author_kind="user", content=body.content, reply_to_id=body.reply_to_id); db.add(m); db.commit(); db.refresh(m)
+    m = ChatMessage(diagram_id=d.id, author_user_id=user.id, author_kind="user", content=body.content, reply_to_id=body.reply_to_id, channel=body.channel); db.add(m); db.commit(); db.refresh(m)
     payload = chat_json(m); await publish(d.id, "chat.message", {"message": payload})
     if brain.is_invocation(m.content, bool(parent and parent.author_kind == "ai")): background.add_task(brain.handle_turn, SessionLocal, d.id, m.id, user.id, body.ai_read_only)
     return payload

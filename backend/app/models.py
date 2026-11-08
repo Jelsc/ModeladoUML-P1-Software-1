@@ -51,8 +51,8 @@ class Deployment(Base):
 def _utcnow(): return datetime.now(timezone.utc)
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
-    __table_args__ = (Index("ix_chat_messages_diagram_created", "diagram_id", "created_at"),)
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4); diagram_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"), nullable=False); author_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True); author_kind: Mapped[str] = mapped_column(String(10), default="user", server_default="user", nullable=False); content: Mapped[str] = mapped_column(Text, nullable=False); reply_to_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True); created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False)
+    __table_args__ = (Index("ix_chat_messages_diagram_created", "diagram_id", "created_at"), Index("ix_chat_messages_diagram_channel_created", "diagram_id", "channel", "created_at"))
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4); diagram_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"), nullable=False); author_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True); author_kind: Mapped[str] = mapped_column(String(10), default="user", server_default="user", nullable=False); content: Mapped[str] = mapped_column(Text, nullable=False); reply_to_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True); channel: Mapped[str] = mapped_column(String(12), default="diseno", server_default="diseno", nullable=False); created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False)
     diagram = relationship("Diagram", back_populates="chat_messages"); author = relationship("User")
 class ActivityLog(Base):
     __tablename__ = "activity_log"

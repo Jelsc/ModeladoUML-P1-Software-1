@@ -2,6 +2,21 @@
 export const CHAT_PAGE_SIZE = 50;
 export const CHAT_MAX_LENGTH = 2000;
 
+// Every diagram has exactly three fixed team chats served by the same AI (ids match the backend). Only "diseno" lets the AI edit the diagram.
+export const CHANNELS = [
+  { id: "diseno", label: "Diseño", hint: "Cambios y decisiones del diagrama", placeholder: "Pida un cambio o escriba al equipo (@ia para hablar con la IA)", aiEdits: true },
+  { id: "desarrollo", label: "Desarrollo", hint: "Flujo de métodos y endpoints del backend generado", placeholder: "Pregunte por el backend generado (@ia para hablar con la IA)", aiEdits: false },
+  { id: "test", label: "Test", hint: "Casos de prueba y verificaciones", placeholder: "Plantee pruebas (@ia para hablar con la IA)", aiEdits: false },
+];
+export const DEFAULT_CHANNEL = "diseno";
+export const channelOf = (id) => CHANNELS.find((channel) => channel.id === id) || CHANNELS[0];
+export const messageChannel = (message) => channelOf(message?.channel).id;
+export const emptyChats = () => Object.fromEntries(CHANNELS.map((channel) => [channel.id, { messages: [], loading: true, hasMore: false }]));
+export const emptyUnread = () => Object.fromEntries(CHANNELS.map((channel) => [channel.id, 0]));
+export const bumpUnread = (unread, channel) => ({ ...unread, [channel]: (unread[channel] || 0) + 1 });
+export const clearUnread = (unread, channel) => unread[channel] ? { ...unread, [channel]: 0 } : unread;
+export const totalUnread = (unread) => Object.values(unread).reduce((sum, count) => sum + count, 0);
+
 const timeOf = (message) => Date.parse(message.created_at) || 0;
 
 // Idempotent merge: the same message can arrive from the POST response and from the realtime event.
@@ -40,9 +55,10 @@ export function formatChatTime(iso, now = new Date()) {
 
 // "La IA está respondiendo..." bookkeeping. ai.thinking carries the id of the question; ai.done carries it as trigger_id.
 export const THINKING_TTL_MS = 90000;
-export const addThinking = (list, event) => list.some((item) => item.messageId === event.message_id) ? list : [...list, { messageId: event.message_id, requester: event.requester || "alguien" }];
+export const addThinking = (list, event) => list.some((item) => item.messageId === event.message_id) ? list : [...list, { messageId: event.message_id, requester: event.requester || "alguien", channel: event.channel || DEFAULT_CHANNEL }];
 export const removeThinking = (list, messageId) => list.filter((item) => item.messageId !== messageId);
-export function thinkingLabel(list) {
+export function thinkingLabel(all, channel) {
+  const list = channel ? all.filter((item) => item.channel === channel) : all;
   if (!list.length) return "";
   const names = [...new Set(list.map((item) => item.requester))];
   const who = names.length === 1 ? names[0] : names.length === 2 ? `${names[0]} y ${names[1]}` : `${names[0]} y ${names.length - 1} más`;
