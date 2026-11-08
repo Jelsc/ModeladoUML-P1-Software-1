@@ -19,6 +19,7 @@ COMMAND_SCHEMA = {
         "action": {"type": "STRING", "enum": [
             "create_class", "rename_class", "delete_class", "add_attribute",
             "add_method", "create_relation", "change_relation_type", "delete_relation",
+            "update_attribute", "update_method",
         ]},
         "class_id": {"type": "STRING", "nullable": True},
         "class_name": {"type": "STRING", "nullable": True},
@@ -27,6 +28,7 @@ COMMAND_SCHEMA = {
         "attribute_type": {"type": "STRING", "nullable": True},
         "method_name": {"type": "STRING", "nullable": True},
         "return_type": {"type": "STRING", "nullable": True},
+        "new_type": {"type": "STRING", "nullable": True},
         "source_class_id": {"type": "STRING", "nullable": True},
         "source_class_name": {"type": "STRING", "nullable": True},
         "target_class_id": {"type": "STRING", "nullable": True},
@@ -78,7 +80,7 @@ class GeminiProvider:
         normalized = dict(payload)
         action = normalized.get("action")
         try:
-            if action in {"rename_class", "delete_class", "add_attribute", "add_method"} and normalized.get("class_name"):
+            if action in {"rename_class", "delete_class", "add_attribute", "add_method", "update_attribute", "update_method"} and normalized.get("class_name"):
                 target = resolve_class_reference(normalized["class_name"], classes)
                 if normalized.get("class_id") and str(target.id) != str(normalized["class_id"]):
                     raise ValueError
@@ -108,6 +110,8 @@ class GeminiProvider:
         if command.relation_id is not None and command.relation_id not in relation_ids:
             raise GeminiProviderError
         if command.attribute_type and command.attribute_type not in TYPES - {"void"}:
+            raise GeminiProviderError
+        if command.new_type and command.new_type not in (TYPES - {"void"} if command.action == "update_attribute" else TYPES):
             raise GeminiProviderError
         if command.return_type and command.return_type not in TYPES:
             raise GeminiProviderError

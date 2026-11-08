@@ -41,7 +41,7 @@ function markerFor(relation, side) {
   return undefined;
 }
 
-export function RelationLayer({ diagram, classDimensions = {}, selectedId, hoveredId, onSelect, onHover }) {
+export function RelationLayer({ diagram, classDimensions = {}, aiChangedIds = [], selectedId, hoveredId, onSelect, onHover }) {
   const relations = Array.isArray(diagram?.relations) ? diagram.relations : [];
   const classes = Array.isArray(diagram?.classes) ? diagram.classes : [];
   const groups = {};
@@ -80,7 +80,7 @@ export function RelationLayer({ diagram, classDimensions = {}, selectedId, hover
     const targetLabel = endpointLabelPosition(targetEdge, targetTangent, "target");
     const associationClass = relation.association_class_id ? classes.find((item) => item?.id === relation.association_class_id) : null;
     const associationLink = associationClass ? associationLinkGeometry(geometry ? selfLoopMidpoint(geometry) : pointOnQuadratic(sourceEdge, { x: cx, y: cy }, targetEdge), classGeometry(associationClass, classDimensions[associationClass.id])) : null;
-    const className = `relation ${relation.type || "association"} ${selectedId === relation.id ? "selected" : ""} ${hoveredId === relation.id ? "hovered" : ""}`;
+    const className = `relation ${relation.type || "association"} ${selectedId === relation.id ? "selected" : ""} ${hoveredId === relation.id ? "hovered" : ""} ${aiChangedIds.includes(relation.id) ? "ai-changed" : ""}`;
     return <g key={relation.id} className={className} onMouseEnter={() => onHover(relationContext(relation))} onMouseLeave={() => onHover(null)} onClick={() => onSelect(relation.id)}>
       <path className="relation-hit" d={geometry?.path || `M ${sourceEdge.x} ${sourceEdge.y} Q ${cx} ${cy} ${targetEdge.x} ${targetEdge.y}`} />
       <path className="relation-line" d={geometry?.path || `M ${sourceEdge.x} ${sourceEdge.y} Q ${cx} ${cy} ${targetEdge.x} ${targetEdge.y}`} markerStart={markerFor(relation, "source")} markerEnd={markerFor(relation, "target")} />

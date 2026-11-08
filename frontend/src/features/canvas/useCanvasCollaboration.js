@@ -11,6 +11,8 @@ export function useCanvasCollaboration({ id, currentUser, canvasRef, zoomRef, pa
   const wsRef = useRef(null), eventTimers = useRef({}), eventPending = useRef({}), eventSequences = useRef({}), cursorTimers = useRef({}), visualFrame = useRef(null), livePositions = useRef({}), remoteCursorPositions = useRef({}), draggingClasses = useRef(new Set()), classDragCancels = useRef(new Map());
   const refreshRef = useRef(refresh), mutateRef = useRef(mutate), readOnlyRef = useRef(readOnly);
   refreshRef.current = refresh; mutateRef.current = mutate; readOnlyRef.current = readOnly;
+  const clientListeners = useRef(new Set());
+  const subscribe = useCallback((listener) => { clientListeners.current.add(listener); return () => { clientListeners.current.delete(listener); }; }, []);
   const scheduleVisualUpdate = useCallback(() => {
     if (visualFrame.current !== null) return;
     visualFrame.current = requestAnimationFrame(() => { visualFrame.current = null; setVisualPositions({ ...livePositions.current }); setRemoteCursors({ ...remoteCursorPositions.current }); });
@@ -32,6 +34,7 @@ export function useCanvasCollaboration({ id, currentUser, canvasRef, zoomRef, pa
     wsRef.current = ws;
     ws.onmessage = (message) => {
       let event; try { event = JSON.parse(message.data); } catch { return; }
+      if (/^(chat|ai)\./.test(event.event)) { clientListeners.current.forEach((listener) => listener(event)); return; }
       if (String(event.user_id) === String(currentUser.id)) return;
       if (event.event === "cursor.move") {
         const sequence = Number(event.seq) || 0, key = `cursor:${event.user_id}`;
@@ -61,5 +64,5 @@ export function useCanvasCollaboration({ id, currentUser, canvasRef, zoomRef, pa
   }, [canvasRef, flushEphemeral, panRef, scheduleVisualUpdate, sendEphemeral, setError, zoomRef]);
   const cancelClassDrag = useCallback(() => [...classDragCancels.current.values()].forEach((stop) => stop()), []);
   const sendCursor = useCallback((event) => { if (!canvasRef.current) return; const point = zoomedCanvasPoint(event, canvasRef.current, zoomRef.current, panRef.current); const seq = (eventSequences.current.cursor || 0) + 1; eventSequences.current.cursor = seq; sendEphemeral("cursor.move", { ...point, seq }); }, [canvasRef, panRef, sendEphemeral, zoomRef]);
-  return { remoteCursors, visualPositions, drag, sendCursor, cancelClassDrag };
+  return { remoteCursors, visualPositions, drag, sendCursor, cancelClassDrag, subscribe };
 }

@@ -1,5 +1,6 @@
 import enum, uuid
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from datetime import datetime, timezone
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
@@ -10,8 +11,10 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True); email: Mapped[str] = mapped_column(String(160), unique=True); name: Mapped[str] = mapped_column(String(120)); password_hash: Mapped[str] = mapped_column(String(255)); role: Mapped[str] = mapped_column(String(20), default="viewer", nullable=False); active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 class Diagram(Base):
     __tablename__ = "diagrams"
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4); title: Mapped[str] = mapped_column(String(200)); owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE")); updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4); title: Mapped[str] = mapped_column(String(200)); owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE")); ai_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False); ai_can_edit: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False); updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     owner = relationship("User"); classes = relationship("UmlClass", cascade="all, delete-orphan", back_populates="diagram"); relations = relationship("Relation", cascade="all, delete-orphan", back_populates="diagram"); members = relationship("DiagramMember", cascade="all, delete-orphan", back_populates="diagram"); deployment = relationship("Deployment", uselist=False, cascade="all, delete-orphan", back_populates="diagram")
+    chat_messages = relationship("ChatMessage", cascade="all, delete-orphan", passive_deletes=True, back_populates="diagram")
+    activity = relationship("ActivityLog", cascade="all, delete-orphan", passive_deletes=True)
 class DiagramMember(Base):
     __tablename__ = "diagram_members"
     __table_args__ = (UniqueConstraint("diagram_id", "user_id", name="uq_diagram_member"),)
@@ -44,3 +47,18 @@ class Deployment(Base):
     url: Mapped[str | None] = mapped_column(String(255)); error_summary: Mapped[str | None] = mapped_column(String(500)); project_hash: Mapped[str | None] = mapped_column(String(64)); project_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False); updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     diagram = relationship("Diagram", back_populates="deployment")
+
+def _utcnow(): return datetime.now(timezone.utc)
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("ix_chat_messages_diagram_created", "diagram_id", "created_at"),)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4); diagram_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"), nullable=False); author_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True); author_kind: Mapped[str] = mapped_column(String(10), default="user", server_default="user", nullable=False); content: Mapped[str] = mapped_column(Text, nullable=False); reply_to_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True); created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False)
+    diagram = relationship("Diagram", back_populates="chat_messages"); author = relationship("User")
+class ActivityLog(Base):
+    __tablename__ = "activity_log"
+    __table_args__ = (Index("ix_activity_log_diagram_created", "diagram_id", "created_at"),)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4); diagram_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"), nullable=False); actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True); actor_kind: Mapped[str] = mapped_column(String(10), default="user", server_default="user", nullable=False); action: Mapped[str] = mapped_column(String(40), nullable=False); entity_type: Mapped[str] = mapped_column(String(20), nullable=False); entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True); summary: Mapped[str] = mapped_column(String(300), nullable=False); created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False)
+    actor = relationship("User")
+class DiagramVisit(Base):
+    __tablename__ = "diagram_visits"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True); diagram_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"), primary_key=True); last_seen_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False)

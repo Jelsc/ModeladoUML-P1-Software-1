@@ -5,6 +5,8 @@ export { Login } from "./auth/Login.jsx";
 export { InvitationModal } from "./auth/InvitationModal.jsx";
 export { AssistantLauncher, MicrophoneIcon } from "../features/assistant/AssistantLauncher.jsx";
 export { AssistantPanel, AssistantPreview } from "../features/assistant/AssistantPanel.jsx";
+export { ChatLauncher } from "../features/chat/ChatLauncher.jsx";
+export { ChatPanel } from "../features/chat/ChatPanel.jsx";
 export { MembersPanel } from "../features/members/MembersPanel.jsx";
 export { DeploymentPanel } from "../features/deployment/DeploymentPanel.jsx";
 export { SqlEditor } from "../features/sql/SqlEditor.jsx";

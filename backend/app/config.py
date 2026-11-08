@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"
     GEMINI_API_KEY: str | None = None
+    LLM_PROVIDER: str = "gemini"
+    LLM_TIMEOUT_MS: int = 30000
 
     class Config:
         env_file = ".env"

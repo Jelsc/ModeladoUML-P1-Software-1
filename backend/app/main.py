@@ -1,16 +1,17 @@
 import json, logging, math, re, time, uuid
 from datetime import datetime, timezone
 from typing import Literal
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, StrictInt, field_validator
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
-from .db import get_db
-from .models import Attribute, Deployment, Diagram, DiagramMember, Method, Relation, RelationType, UmlClass, User
+from .db import SessionLocal, get_db
+from .models import ActivityLog, Attribute, ChatMessage, Deployment, Diagram, DiagramMember, DiagramVisit, Method, Relation, RelationType, UmlClass, User
 from .permissions import access, can_edit, member_access, owner
 from .security import create_token, current_user, hash_password
 from .collaboration import collaboration
@@ -19,6 +20,7 @@ from .assistant.executor import execute as execute_assistant
 from .assistant.parser import parse as parse_assistant
 from .assistant.schemas import AssistantCommand, ExecuteRequest, ParseRequest
 from .assistant.gemini import try_interpret
+from .assistant import brain
 from .vision import router as vision_router
 from exporters.uml import export_zip
 from exporters.association_class import association_fk_names
@@ -134,6 +136,9 @@ def relation_type(value):
 def touch_diagram(db, diagram):
     diagram.updated_at = datetime.now(timezone.utc)
     db.flush()
+def actor_name(user): return getattr(user, "name", None) or "Alguien"
+def log_activity(db, diagram_id, user, action, entity_type, entity_id, summary, kind="user"):
+    db.add(ActivityLog(diagram_id=diagram_id, actor_user_id=user.id if user else None, actor_kind=kind, action=action, entity_type=entity_type, entity_id=str(entity_id) if entity_id else None, summary=summary[:300]))
 def endpoint_for(db, endpoint_id, endpoint_type, class_id):
     endpoint_type = endpoint_type.lower()
     if endpoint_type == "class":
@@ -394,23 +399,86 @@ async def remove_member(diagram_id: uuid.UUID, user_id: int, db: Session = Depen
     d = owned(db, user, diagram_id); member = db.query(DiagramMember).filter_by(diagram_id=d.id, user_id=user_id).first()
     if not member: raise HTTPException(404, "Miembro no encontrado")
     db.delete(member); db.commit(); await publish(d.id, "member.removed", {"user_id": user_id}); return {"ok": True}
+class ChatIn(BaseModel):
+    content: str; reply_to_id: uuid.UUID | None = None; ai_read_only: bool = False  # read-only clients (mobile) must never let the AI edit on their behalf
+    @field_validator("content")
+    @classmethod
+    def valid_content(cls, value):
+        value = value.strip()
+        if not value: raise ValueError("El mensaje no puede estar vacío")
+        if len(value) > 2000: raise ValueError("El mensaje no puede superar los 2000 caracteres")
+        return value
+def chat_json(m): return {"id": str(m.id), "diagram_id": str(m.diagram_id), "author_user_id": m.author_user_id, "author_name": m.author.name if m.author else None, "author_kind": m.author_kind, "content": m.content, "reply_to_id": str(m.reply_to_id) if m.reply_to_id else None, "created_at": m.created_at.isoformat() if m.created_at else None}
+@app.get("/diagrams/{diagram_id}/chat")
+def list_chat(diagram_id: uuid.UUID, before: datetime | None = None, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user=Depends(current_user)):
+    member_access(db, user, diagram_id); q = db.query(ChatMessage).filter_by(diagram_id=diagram_id)
+    if before: q = q.filter(ChatMessage.created_at < before)
+    return [chat_json(m) for m in reversed(q.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit).all())]
+@app.post("/diagrams/{diagram_id}/chat", status_code=201)
+async def post_chat(diagram_id: uuid.UUID, body: ChatIn, background: BackgroundTasks, db: Session = Depends(get_db), user=Depends(current_user)):
+    d = member_access(db, user, diagram_id); parent = db.query(ChatMessage).filter_by(id=body.reply_to_id, diagram_id=d.id).first() if body.reply_to_id else None
+    if body.reply_to_id and not parent: raise HTTPException(404, "Mensaje a responder no encontrado")
+    m = ChatMessage(diagram_id=d.id, author_user_id=user.id, author_kind="user", content=body.content, reply_to_id=body.reply_to_id); db.add(m); db.commit(); db.refresh(m)
+    payload = chat_json(m); await publish(d.id, "chat.message", {"message": payload})
+    if brain.is_invocation(m.content, bool(parent and parent.author_kind == "ai")): background.add_task(brain.handle_turn, SessionLocal, d.id, m.id, user.id, body.ai_read_only)
+    return payload
+class AiSettingsIn(BaseModel):
+    ai_enabled: bool; ai_can_edit: bool
+@app.get("/diagrams/{diagram_id}/ai-settings")
+def get_ai_settings(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
+    d = member_access(db, user, diagram_id); return {"ai_enabled": d.ai_enabled, "ai_can_edit": d.ai_can_edit}
+@app.put("/diagrams/{diagram_id}/ai-settings")
+async def set_ai_settings(diagram_id: uuid.UUID, body: AiSettingsIn, db: Session = Depends(get_db), user=Depends(current_user)):
+    d = owner(db, user, diagram_id); d.ai_enabled, d.ai_can_edit = body.ai_enabled, body.ai_can_edit; db.commit()
+    payload = {"ai_enabled": d.ai_enabled, "ai_can_edit": d.ai_can_edit}; await publish(d.id, "ai.settings", payload); return payload
+def activity_json(a): return {"id": str(a.id), "diagram_id": str(a.diagram_id), "actor_user_id": a.actor_user_id, "actor_name": a.actor.name if a.actor else None, "actor_kind": a.actor_kind, "action": a.action, "entity_type": a.entity_type, "entity_id": a.entity_id, "summary": a.summary, "created_at": a.created_at.isoformat() if a.created_at else None}
+@app.get("/diagrams/{diagram_id}/activity")
+def list_activity(diagram_id: uuid.UUID, before: datetime | None = None, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user=Depends(current_user)):
+    member_access(db, user, diagram_id); q = db.query(ActivityLog).filter_by(diagram_id=diagram_id)
+    if before: q = q.filter(ActivityLog.created_at < before)
+    return [activity_json(a) for a in q.order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc()).limit(limit).all()]
+DIGEST_ITEMS, DIGEST_SCAN = 30, 500
+def others_activity(db, diagram_id, user, since): return db.query(ActivityLog).filter(ActivityLog.diagram_id == diagram_id, ActivityLog.created_at > since, or_(ActivityLog.actor_user_id.is_(None), ActivityLog.actor_user_id != user.id))
+@app.get("/diagrams/{diagram_id}/digest")
+def get_digest(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
+    """What the other members and the AI did since this user last marked the diagram as seen. Read-only."""
+    d = member_access(db, user, diagram_id); visit = db.get(DiagramVisit, (user.id, d.id)); since = visit.last_seen_at if visit else None
+    if since is None: return {"since": None, "activity": [], "activity_total": 0, "chat_total": 0, "by_actor": {}}
+    q = others_activity(db, d.id, user, since); total = q.count(); rows = q.order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc()).limit(DIGEST_SCAN).all(); by_actor = {}
+    for a in rows:
+        name = a.actor.name if a.actor else ("IA" if a.actor_kind == "ai" else "Usuario eliminado"); by_actor[name] = by_actor.get(name, 0) + 1
+    chat_total = db.query(ChatMessage).filter(ChatMessage.diagram_id == d.id, ChatMessage.created_at > since, ChatMessage.author_kind == "user", or_(ChatMessage.author_user_id.is_(None), ChatMessage.author_user_id != user.id)).count()
+    return {"since": since.isoformat(), "activity": [activity_json(a) for a in reversed(rows[:DIGEST_ITEMS])], "activity_total": total, "chat_total": chat_total, "by_actor": by_actor}
+@app.post("/diagrams/{diagram_id}/seen")
+def mark_seen(diagram_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
+    d = member_access(db, user, diagram_id); now = datetime.now(timezone.utc)
+    for attempt in range(2):
+        visit = db.get(DiagramVisit, (user.id, d.id))
+        if visit: visit.last_seen_at = now
+        else: db.add(DiagramVisit(user_id=user.id, diagram_id=d.id, last_seen_at=now))
+        try: db.commit(); break
+        except IntegrityError: db.rollback()  # two tabs created the first visit at once: retry as an update
+    return {"last_seen_at": now.isoformat()}
 @app.post("/diagrams/{diagram_id}/classes")
 async def add_class(diagram_id: uuid.UUID, body: ClassIn, db: Session = Depends(get_db), user=Depends(current_user)):
-    d = editable(db, user, diagram_id); c = UmlClass(diagram_id=d.id, name=body.name.strip(), x=body.x, y=body.y); db.add(c); touch_diagram(db, d); db.commit(); db.refresh(c); await publish(d.id, "class.created", {"class": class_json(c)}); return class_json(c)
+    d = editable(db, user, diagram_id); c = UmlClass(diagram_id=d.id, name=body.name.strip(), x=body.x, y=body.y); db.add(c); touch_diagram(db, d); log_activity(db, d.id, user, "class.created", "class", c.id, f"{actor_name(user)} creó la clase {c.name}"); db.commit(); db.refresh(c); await publish(d.id, "class.created", {"class": class_json(c)}); return class_json(c)
 @app.patch("/classes/{class_id}")
 async def update_class(class_id: uuid.UUID, body: ClassPatch, db: Session = Depends(get_db), user=Depends(current_user)):
     c = owned_class(db, user, class_id)
-    for key, value in body.model_dump(exclude_unset=True).items(): setattr(c, key, value.strip() if key == "name" and value else value)
+    old_name = c.name; changes = body.model_dump(exclude_unset=True)
+    for key, value in changes.items(): setattr(c, key, value.strip() if key == "name" and value else value)
+    renamed = "name" in changes and c.name != old_name
+    if renamed or set(changes) - {"x", "y"}: log_activity(db, c.diagram_id, user, "class.renamed" if renamed else "class.updated", "class", c.id, f"{actor_name(user)} renombró la clase {old_name} a {c.name}" if renamed else f"{actor_name(user)} modificó la clase {c.name}")
     touch_diagram(db, c.diagram); db.commit(); db.refresh(c); await publish(c.diagram_id, "class.updated", {"class": class_json(c)}); return class_json(c)
 @app.delete("/classes/{class_id}")
 async def delete_class(class_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
-    c = owned_class(db, user, class_id); diagram_id = c.diagram_id; touch_diagram(db, c.diagram); db.delete(c); db.commit(); await publish(diagram_id, "class.deleted", {"class_id": str(class_id)}); return {"ok": True}
+    c = owned_class(db, user, class_id); diagram_id = c.diagram_id; log_activity(db, diagram_id, user, "class.deleted", "class", c.id, f"{actor_name(user)} eliminó la clase {c.name}"); touch_diagram(db, c.diagram); db.delete(c); db.commit(); await publish(diagram_id, "class.deleted", {"class_id": str(class_id)}); return {"ok": True}
 def item_json(item, method=False): return {"id": str(item.id), "name": item.name, "type": item.return_type if method else item.type}
 @app.post("/classes/{class_id}/{kind}")
 async def add_item(class_id: uuid.UUID, kind: str, body: ItemIn, db: Session = Depends(get_db), user=Depends(current_user)):
     c = owned_class(db, user, class_id)
     if kind not in ("attributes", "methods"): raise HTTPException(404, "Detalle inválido")
-    item = (Attribute(class_id=c.id, name=body.name, type=body.type) if kind == "attributes" else Method(class_id=c.id, name=body.name, return_type=body.type)); db.add(item); touch_diagram(db, c.diagram); db.commit(); db.refresh(item); await publish(c.diagram_id, "class.updated", {"class": class_json(c)}); return item_json(item, kind == "methods")
+    item = (Attribute(class_id=c.id, name=body.name, type=body.type) if kind == "attributes" else Method(class_id=c.id, name=body.name, return_type=body.type)); db.add(item); touch_diagram(db, c.diagram); log_activity(db, c.diagram_id, user, f"{kind[:-1]}.created", kind[:-1], item.id, f"{actor_name(user)} agregó {'el atributo' if kind == 'attributes' else 'el método'} {item.name} a {c.name}"); db.commit(); db.refresh(item); await publish(c.diagram_id, "class.updated", {"class": class_json(c)}); return item_json(item, kind == "methods")
 @app.patch("/details/{kind}/{item_id}")
 async def update_item(kind: str, item_id: uuid.UUID, body: ItemPatch, db: Session = Depends(get_db), user=Depends(current_user)):
     model = Attribute if kind == "attributes" else Method if kind == "methods" else None
@@ -421,6 +489,7 @@ async def update_item(kind: str, item_id: uuid.UUID, body: ItemPatch, db: Sessio
     values = body.model_dump(exclude_unset=True)
     if "type" in values: setattr(item, "return_type" if kind == "methods" else "type", values.pop("type"))
     for key, value in values.items(): setattr(item, key, value)
+    log_activity(db, item.uml_class.diagram_id, user, f"{kind[:-1]}.updated", kind[:-1], item.id, f"{actor_name(user)} modificó {'el atributo' if kind == 'attributes' else 'el método'} {item.name} de {item.uml_class.name}")
     touch_diagram(db, item.uml_class.diagram); db.commit(); db.refresh(item); await publish(item.uml_class.diagram_id, "class.updated", {"class": class_json(item.uml_class)}); return item_json(item, kind == "methods")
 @app.delete("/details/{kind}/{item_id}")
 async def delete_item(kind: str, item_id: uuid.UUID, db: Session = Depends(get_db), user=Depends(current_user)):
@@ -429,7 +498,7 @@ async def delete_item(kind: str, item_id: uuid.UUID, db: Session = Depends(get_d
     item = db.query(model).join(UmlClass).filter(model.id == item_id).first()
     if not item: raise HTTPException(404, "Detalle no encontrado")
     editable(db, user, item.uml_class.diagram_id)
-    diagram_id = item.uml_class.diagram_id; class_id = item.class_id; touch_diagram(db, item.uml_class.diagram); db.delete(item); db.commit(); await publish(diagram_id, "class.updated", {"class": class_json(db.get(UmlClass, class_id))}); return {"ok": True}
+    diagram_id = item.uml_class.diagram_id; class_id = item.class_id; log_activity(db, diagram_id, user, f"{kind[:-1]}.deleted", kind[:-1], item.id, f"{actor_name(user)} eliminó {'el atributo' if kind == 'attributes' else 'el método'} {item.name} de {item.uml_class.name}"); touch_diagram(db, item.uml_class.diagram); db.delete(item); db.commit(); await publish(diagram_id, "class.updated", {"class": class_json(db.get(UmlClass, class_id))}); return {"ok": True}
 @app.post("/diagrams/{diagram_id}/relations")
 async def add_relation(diagram_id: uuid.UUID, body: RelationIn, db: Session = Depends(get_db), user=Depends(current_user)):
     d = editable(db, user, diagram_id); source = db.query(UmlClass).filter_by(id=body.source_id, diagram_id=d.id).first(); target = db.query(UmlClass).filter_by(id=body.target_id, diagram_id=d.id).first()
@@ -438,7 +507,7 @@ async def add_relation(diagram_id: uuid.UUID, body: RelationIn, db: Session = De
     endpoint_for(db, body.source_endpoint, source_type, source.id); endpoint_for(db, body.target_endpoint, target_type, target.id)
     duplicate = db.query(Relation).filter_by(diagram_id=d.id, source_id=source.id, target_id=target.id, source_endpoint=body.source_endpoint, target_endpoint=body.target_endpoint, type=relation_type(body.type)).first()
     if duplicate: raise HTTPException(409, "La relación ya existe")
-    r = Relation(diagram_id=d.id, source_id=source.id, target_id=target.id, source_endpoint=body.source_endpoint, target_endpoint=body.target_endpoint, source_endpoint_type=source_type, target_endpoint_type=target_type, type=relation_type(body.type), label=body.label, source_multiplicity=body.source_multiplicity, target_multiplicity=body.target_multiplicity); db.add(r); touch_diagram(db, d); db.commit(); db.refresh(r); await publish(d.id, "relation.created", {"relation": relation_json(r)}); return relation_json(r)
+    r = Relation(diagram_id=d.id, source_id=source.id, target_id=target.id, source_endpoint=body.source_endpoint, target_endpoint=body.target_endpoint, source_endpoint_type=source_type, target_endpoint_type=target_type, type=relation_type(body.type), label=body.label, source_multiplicity=body.source_multiplicity, target_multiplicity=body.target_multiplicity); db.add(r); touch_diagram(db, d); log_activity(db, d.id, user, "relation.created", "relation", r.id, f"{actor_name(user)} creó una relación {r.type.value} de {source.name} a {target.name}"); db.commit(); db.refresh(r); await publish(d.id, "relation.created", {"relation": relation_json(r)}); return relation_json(r)
 @app.patch("/relations/{relation_id}")
 async def update_relation(relation_id: uuid.UUID, body: RelationPatch, db: Session = Depends(get_db), user=Depends(current_user)):
     r = db.query(Relation).filter(Relation.id == relation_id).first()
@@ -451,6 +520,7 @@ async def update_relation(relation_id: uuid.UUID, body: RelationPatch, db: Sessi
     values["source_endpoint_type"] = source_type; values["target_endpoint_type"] = target_type
     for key, value in values.items(): setattr(r, key, value)
     freed = unlink_association_class(db, r) if r.association_class_id and not is_many_to_many(r) else None
+    log_activity(db, r.diagram_id, user, "relation.updated", "relation", r.id, f"{actor_name(user)} modificó la relación {r.type.value} de {r.source.name} a {r.target.name}")
     touch_diagram(db, r.diagram); db.commit(); db.refresh(r)
     if freed: await publish(r.diagram_id, "class.updated", {"class": class_json(freed)})
     await publish(r.diagram_id, "relation.updated", {"relation": relation_json(r)}); return relation_json(r)
@@ -474,7 +544,7 @@ async def convert_to_association_class(relation_id: uuid.UUID, db: Session = Dep
     d = r.diagram; a, b = r.source, r.target; fk_a, fk_b = association_fk_names(a.name, b.name)
     c = UmlClass(diagram_id=d.id, name=unique_class_name([x.name for x in d.classes], f"{a.name}{b.name}"), x=round((a.x + b.x) / 2), y=round((a.y + b.y) / 2) + 200, is_association=True)
     c.attributes = [Attribute(name=fk_a, type="Long"), Attribute(name=fk_b, type="Long")]
-    db.add(c); db.flush(); r.association_class_id = c.id; touch_diagram(db, d); db.commit(); db.refresh(c); db.refresh(r)
+    db.add(c); db.flush(); r.association_class_id = c.id; log_activity(db, d.id, user, "association_class.created", "class", c.id, f"{actor_name(user)} convirtió la relación {a.name}-{b.name} en la clase de asociación {c.name}"); touch_diagram(db, d); db.commit(); db.refresh(c); db.refresh(r)
     await publish(d.id, "class.created", {"class": class_json(c)}); await publish(d.id, "relation.updated", {"relation": relation_json(r)})
     return {"class": class_json(c), "relation": relation_json(r)}
 @app.delete("/relations/{relation_id}")
@@ -482,7 +552,7 @@ async def delete_relation(relation_id: uuid.UUID, db: Session = Depends(get_db),
     r = db.query(Relation).filter(Relation.id == relation_id).first()
     if not r: raise HTTPException(404, "Relación no encontrada")
     editable(db, user, r.diagram_id)
-    diagram_id = r.diagram_id; freed = unlink_association_class(db, r); touch_diagram(db, r.diagram); db.delete(r); db.commit()
+    diagram_id = r.diagram_id; freed = unlink_association_class(db, r); log_activity(db, diagram_id, user, "relation.deleted", "relation", r.id, f"{actor_name(user)} eliminó la relación {r.type.value} de {r.source.name} a {r.target.name}"); touch_diagram(db, r.diagram); db.delete(r); db.commit()
     if freed: await publish(diagram_id, "class.updated", {"class": class_json(freed)})
     await publish(diagram_id, "relation.deleted", {"relation_id": str(relation_id)}); return {"ok": True}
 @app.post("/diagrams/{diagram_id}/export")
