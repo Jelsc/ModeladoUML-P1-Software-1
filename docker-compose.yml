@@ -1,19 +1,16 @@
 name: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}
 
 services:
-  db:
-    image: postgres:16-alpine
+  mongodb:
+    image: mongo:7
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
-      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      MONGO_INITDB_DATABASE: ${MONGODB_DATABASE:-modeladouml}
       TZ: America/La_Paz
-      PGTZ: America/La_Paz
-    volumes: [postgres_data:/var/lib/postgresql/data]
+    volumes: [mongodb_data:/data/db]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 10
   redis:
     image: redis:7-alpine
@@ -22,7 +19,9 @@ services:
   backend:
     build: { context: ., dockerfile: backend/Dockerfile }
     environment:
-      DB_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PERSISTENCE_BACKEND: mongodb
+      MONGODB_URL: mongodb://mongodb:27017
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-modeladouml}
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
@@ -39,8 +38,9 @@ services:
       DEPLOY_GATEWAY_CONTAINER: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}-deploy-gateway
       DEPLOY_CREDENTIAL_SECRET: ${DEPLOY_CREDENTIAL_SECRET:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-adminsdk.json
     depends_on:
-      db: { condition: service_healthy }
+      mongodb: { condition: service_healthy }
       redis: { condition: service_healthy }
     ports: ["${BACKEND_PORT:-8000}:8000"]
     volumes:
@@ -48,6 +48,7 @@ services:
       - deploy_build:/deploy-build
       - deploy_gateway_config:/deploy-gateway
       - whisper_models:/models
+      - ./firebase-adminsdk.json:/run/secrets/firebase-adminsdk.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -112,8 +113,8 @@ services:
     command: -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $$!; done'
     depends_on: [deploy-gateway]
 volumes:
-  postgres_data:
-    name: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}_postgres_data
+  mongodb_data:
+    name: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}_mongodb_data
   frontend_node_modules:
     name: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}_frontend_node_modules
   deploy_build:

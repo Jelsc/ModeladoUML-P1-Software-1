@@ -6,6 +6,8 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
@@ -15,11 +17,14 @@ from .llm import LLMError, get_llm
 from .parser import DESTRUCTIVE, parse as parse_rules
 from .schemas import AssistantCommand
 from sqlalchemy import or_
+from pymongo.errors import DuplicateKeyError
 
 from exporters.endpoints import KINDS as ENDPOINT_KINDS, prepare_spec, route_key
 from exporters.validator import entity_route_path
 
 from ..models import ActivityLog, ChatMessage, Diagram, DiagramVisit, EndpointSpec, Relation, UmlClass, User
+from ..models import RelationType
+from ..mongo_store import MongoStore, endpoint_spec_to_document, stable_uuid
 from ..permissions import access, can_edit
 
 logger = logging.getLogger(__name__)
@@ -78,6 +83,12 @@ def strip_mention(content): return re.sub(r"\s+", " ", MENTION.sub("", content))
 
 def missed_since_last_visit(db, diagram, requester):
     """What others (and the AI) did since the requester last marked the diagram as seen."""
+    if isinstance(db, MongoStore):
+        visit = db.visits.find_one({"user_id": requester["id"], "diagram_id": diagram["id"]})
+        since = visit.get("last_seen_at") if visit else None
+        if since is None: return {"fecha": None, "actividad": []}
+        rows = list(db.activity.find({"diagram_id": diagram["id"], "created_at": {"$gt": since}, "$or": [{"actor_user_id": None}, {"actor_user_id": {"$ne": requester["id"]}}]}).sort([("created_at", -1), ("id", -1)]).limit(MISSED_ITEMS))
+        return {"fecha": since.isoformat(), "actividad": [a["summary"] for a in reversed(rows)]}
     visit = db.get(DiagramVisit, (requester.id, diagram.id)); since = visit.last_seen_at if visit else None
     if since is None: return {"fecha": None, "actividad": []}
     rows = db.query(ActivityLog).filter(ActivityLog.diagram_id == diagram.id, ActivityLog.created_at > since, or_(ActivityLog.actor_user_id.is_(None), ActivityLog.actor_user_id != requester.id)).order_by(ActivityLog.created_at.desc()).limit(MISSED_ITEMS).all()
@@ -85,6 +96,28 @@ def missed_since_last_visit(db, diagram, requester):
 
 
 def build_context(db, diagram, trigger, requester):
+    if isinstance(db, MongoStore):
+        classes, relations = _mongo_snapshots(diagram)
+        chats = list(db.chat_messages.find({"diagram_id": diagram["id"], "channel": trigger["channel"], "created_at": {"$lte": trigger["created_at"]}}).sort([("created_at", -1), ("id", -1)]).limit(CHAT_CONTEXT))
+        activities = list(db.activity.find({"diagram_id": diagram["id"]}).sort([("created_at", -1), ("id", -1)]).limit(ACTIVITY_CONTEXT))
+        context = {
+            "chat": trigger["channel"], "diagrama": diagram["title"],
+            "clases": [{"nombre": c.name, "atributos": [f"{a.name}: {a.type}" for a in c.attributes], "metodos": [f"{m.name}(): {m.return_type}" for m in c.methods]} for c in classes],
+            "relaciones": [{"origen": r.source.name, "destino": r.target.name, "tipo": r.type.value, "multiplicidad": [r.source_multiplicity, r.target_multiplicity]} for r in relations],
+            "chat_reciente": [{"autor": "IA" if m["author_kind"] == "ai" else ((db.user_by_id(m.get("author_user_id")) or {}).get("name") or "Usuario eliminado"), "texto": m["content"][:500]} for m in reversed(chats)],
+            "actividad_reciente": [a["summary"] for a in reversed(activities)],
+            "desde_su_ultima_visita": missed_since_last_visit(db, diagram, requester),
+        }
+        if trigger["channel"] != "diseno":
+            context["backend_generado"] = backend_outline(classes, relations)
+            by_id = {item["id"]: item for item in diagram.get("classes", [])}
+            specs = db.endpoint_specs.find({"diagram_id": diagram["id"]}).sort([("created_at", 1), ("name", 1)])
+            context["endpoints_ia"] = [{
+                "clase": by_id[item["class_id"]]["name"], "nombre": item["name"],
+                "ruta": f"{item['http_method']} {entity_route_path(by_id[item['class_id']]['name'])}{item['path']}",
+                "tipo": item["kind"], "estado": "aprobado" if item["status"] == "approved" else "pendiente de aprobación",
+            } for item in specs if item["class_id"] in by_id]
+        return context
     classes = db.query(UmlClass).filter_by(diagram_id=diagram.id).order_by(UmlClass.name).all()
     relations = db.query(Relation).filter_by(diagram_id=diagram.id).all()
     chat = db.query(ChatMessage).filter(ChatMessage.diagram_id == diagram.id, ChatMessage.channel == trigger.channel, ChatMessage.created_at <= trigger.created_at).order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(CHAT_CONTEXT).all()
@@ -117,7 +150,8 @@ def backend_outline(classes, relations):
 
 
 def build_prompt(context, requester, text, may_edit):
-    return f"Contexto compartido del equipo (JSON): {json.dumps(context, ensure_ascii=False)}\npuede_editar: {str(may_edit).lower()}\nSolicitud de {requester.name}: {text}"
+    name = requester.get("name") if isinstance(requester, dict) else requester.name
+    return f"Contexto compartido del equipo (JSON): {json.dumps(context, ensure_ascii=False)}\npuede_editar: {str(may_edit).lower()}\nSolicitud de {name}: {text}"
 
 
 def describe(command, names):
@@ -138,6 +172,20 @@ def _changes(c): return " (" + ", ".join(x for x in (f"nombre: {c.new_name}" if 
 def _redundant(db, diagram_id, command):
     """Reason to skip an action that would change nothing, or None."""
     if command.action in ("update_attribute", "update_method"):
+        if isinstance(db, MongoStore):
+            diagram = db.diagram_by_id(diagram_id)
+            item = next((c for c in (diagram or {}).get("classes", []) if c["id"] == str(command.class_id)), None)
+            if item is None: return "La clase ya no existe en este diagrama"
+            is_attr = command.action == "update_attribute"
+            values = item.get("attributes" if is_attr else "methods", [])
+            wanted = (command.attribute_name if is_attr else command.method_name).strip().lower()
+            detail = next((x for x in values if x["name"].lower() == wanted), None)
+            if detail is None: return f"No existe {'el atributo' if is_attr else 'el método'} {command.attribute_name or command.method_name} en {item['name']}"
+            old_type = detail.get("type" if is_attr else "return_type")
+            same_name = not command.new_name or command.new_name.strip() == detail["name"]
+            same_type = not command.new_type or command.new_type == old_type
+            if same_name and same_type: return f"Sin cambios: {detail['name']} ya era así"
+            return None
         item, is_attr = db.get(UmlClass, command.class_id), command.action == "update_attribute"
         wanted = (command.attribute_name if is_attr else command.method_name).strip().lower()
         detail = next((x for x in (item.attributes if is_attr else item.methods) if x.name.lower() == wanted), None)
@@ -149,6 +197,18 @@ def _redundant(db, diagram_id, command):
 
 
 def _already_there(db, diagram_id, command):
+    if isinstance(db, MongoStore):
+        diagram = db.diagram_by_id(diagram_id)
+        classes = diagram.get("classes", []) if diagram else []
+        if command.action == "create_class":
+            return any(c["name"].lower() == command.class_name.strip().lower() for c in classes)
+        if command.action in ("add_attribute", "add_method"):
+            item = next((c for c in classes if c["id"] == str(command.class_id)), None)
+            if not item: return False
+            bucket = "attributes" if command.action == "add_attribute" else "methods"
+            wanted = (command.attribute_name or command.method_name).lower()
+            return wanted in {d["name"].lower() for d in item.get(bucket, [])}
+        return False
     if command.action == "create_class":
         return any(c.name.lower() == command.class_name.strip().lower() for c in db.query(UmlClass).filter_by(diagram_id=diagram_id))
     if command.action in ("add_attribute", "add_method"):
@@ -163,6 +223,23 @@ async def apply_actions(db, requester, diagram, payloads):
     so a later action can refer to a class created by an earlier one."""
     from .executor import execute
     done, skipped, touched = [], [], {"classes": [], "relations": []}
+    if isinstance(db, MongoStore):
+        for payload in payloads[:MAX_ACTIONS]:
+            try:
+                current = db.diagram_by_id(diagram["id"])
+                classes, relations = _mongo_snapshots(current)
+                command = payload if isinstance(payload, AssistantCommand) else GeminiProvider._validate_command(payload, classes, relations)
+                if command.action in DESTRUCTIVE:
+                    skipped.append("Eliminar o renombrar lo tenés que hacer vos desde el editor"); continue
+                reason = _redundant(db, diagram["id"], command)
+                if reason: skipped.append(reason); continue
+                result = await execute(db, requester, diagram["id"], command, kind="ai"); _collect(touched, result)
+                current = db.diagram_by_id(diagram["id"])
+                done.append(describe(command, {uuid.UUID(c["id"]): c["name"] for c in current.get("classes", [])}))
+            except (GeminiProviderError, HTTPException, ValueError):
+                skipped.append("No pude aplicar una de las acciones (datos inválidos)")
+        if len(payloads) > MAX_ACTIONS: skipped.append(f"Solo aplico hasta {MAX_ACTIONS} acciones por pedido")
+        return done, list(dict.fromkeys(skipped)), touched
     for payload in payloads[:MAX_ACTIONS]:
         try:
             classes = db.query(UmlClass).filter_by(diagram_id=diagram.id).all(); relations = db.query(Relation).filter_by(diagram_id=diagram.id).all()
@@ -182,6 +259,36 @@ async def apply_endpoints(db, requester, diagram, items):
     """Store the endpoints the AI designed as PROPOSED specs: nothing is generated or deployed until a member approves them."""
     from .. import main
     done, skipped = [], []
+    if isinstance(db, MongoStore):
+        doc = diagram if isinstance(diagram, dict) else db.diagram_by_id(diagram)
+        if not doc: return done, ["El diagrama ya no existe"]
+        requester_id = requester.get("id") if isinstance(requester, dict) else requester.id
+        requester_name = requester.get("name") if isinstance(requester, dict) else requester.name
+        for raw in [item for item in items if isinstance(item, dict)][:MAX_ENDPOINTS]:
+            label = f"{str(raw.get('class_name') or '?')[:40]}.{str(raw.get('name') or '?')[:40]}"
+            try:
+                cls = next((value for value in doc.get("classes", []) if value["name"].casefold() == str(raw.get("class_name") or "").strip().casefold()), None)
+                if cls is None:
+                    skipped.append(f"{label}: la clase no existe en el diagrama"); continue
+                existing = list(db.endpoint_specs.find({"class_id": cls["id"]}))
+                spec, error = prepare_spec(raw, [(a["name"], a.get("type", "string")) for a in cls.get("attributes", [])],
+                    {value["name"] for value in existing},
+                    {route_key({"http_method": value["http_method"], "path": value["path"]}) for value in existing})
+                if error:
+                    skipped.append(f"{cls['name']}.{str(raw.get('name') or '?')[:40]}: {error}"); continue
+                endpoint = endpoint_spec_to_document({"id": stable_uuid(), "diagram_id": doc["id"], "class_id": cls["id"],
+                    "status": "proposed", "created_by": requester_id, **spec})
+                db.endpoint_specs.insert_one(endpoint)
+                route = f"{spec['http_method']} {entity_route_path(cls['name'])}{spec['path']}"
+                db.record_activity(doc["id"], None, "endpoint.proposed", "endpoint", endpoint["id"],
+                    f"IA (a pedido de {requester_name}) propuso el endpoint {route} en {cls['name']}", "ai")
+                done.append(f"Propuse el endpoint {route} ({spec['name']}): queda pendiente de aprobación")
+            except (DuplicateKeyError, TypeError, ValueError):
+                skipped.append(f"{label}: no pude guardarlo")
+        if done: await main.publish(doc["id"], "ai.endpoints", {"change": "proposed"})
+        if len([item for item in items if isinstance(item, dict)]) > MAX_ENDPOINTS:
+            skipped.append(f"Solo propongo hasta {MAX_ENDPOINTS} endpoints por pedido")
+        return done, list(dict.fromkeys(skipped))
     for raw in [i for i in items if isinstance(i, dict)][:MAX_ENDPOINTS]:
         label = f"{str(raw.get('class_name') or '?')[:40]}.{str(raw.get('name') or '?')[:40]}"
         try:
@@ -221,6 +328,8 @@ def compose_reply(reply, done, skipped):
 
 async def handle_turn(session_factory, diagram_id, trigger_id, requester_id, read_only=False):
     """Answer one invocation. Invocations of the same diagram are served strictly one at a time, in arrival order."""
+    if isinstance(session_factory, MongoStore):
+        return await _handle_mongo_turn(session_factory, diagram_id, trigger_id, requester_id, read_only)
     from .. import main
     async with _locks.setdefault(str(diagram_id), asyncio.Lock()):
         with session_factory() as db:
@@ -246,28 +355,91 @@ async def handle_turn(session_factory, diagram_id, trigger_id, requester_id, rea
 
 
 async def _answer(db, requester, diagram, trigger, may_edit, read_only=False):
-    request = strip_mention(trigger.content)
+    trigger_content = trigger.get("content") if isinstance(trigger, dict) else trigger.content
+    trigger_channel = trigger.get("channel", "diseno") if isinstance(trigger, dict) else trigger.channel
+    request = strip_mention(trigger_content)
+    requester_name = requester.get("name") if isinstance(requester, dict) else requester.name
     llm = get_llm(); result = None
     if llm:
-        try: result = await asyncio.to_thread(llm.generate, f"{SYSTEM} {CHANNEL_FOCUS.get(trigger.channel, CHANNEL_FOCUS['diseno'])}", build_prompt(build_context(db, diagram, trigger, requester), requester, request, may_edit), BRAIN_SCHEMA)
+        try: result = await asyncio.to_thread(llm.generate, f"{SYSTEM} {CHANNEL_FOCUS.get(trigger_channel, CHANNEL_FOCUS['diseno'])}", build_prompt(build_context(db, diagram, trigger, requester), requester, request, may_edit), BRAIN_SCHEMA)
         except LLMError: result = None
     if result is not None:
         actions = result.get("actions") if isinstance(result.get("actions"), list) else []
         endpoints = result.get("endpoints") if isinstance(result.get("endpoints"), list) else []
         reply = str(result.get("reply") or "")
     else:  # model unavailable: the rule-based parser still understands simple Spanish commands
-        reply = f"{requester.name}, no pude usar el modelo de IA"; endpoints = []
+        reply = f"{requester_name}, no pude usar el modelo de IA"
+        endpoints = []
         try:
-            actions = [parse_rules(request, db.query(UmlClass).filter_by(diagram_id=diagram.id).all(), db.query(Relation).filter_by(diagram_id=diagram.id).all())]
+            if isinstance(db, MongoStore):
+                classes, relations = _mongo_snapshots(diagram)
+            else:
+                classes, relations = db.query(UmlClass).filter_by(diagram_id=diagram.id).all(), db.query(Relation).filter_by(diagram_id=diagram.id).all()
+            actions = [parse_rules(request, classes, relations)]
             reply += ", pero entendí tu pedido como un comando directo."
         except ValueError as exc:
             actions = []; reply += f" y no entendí el pedido como comando ({exc})."
+    ai_can_edit = diagram.get("ai_can_edit", True) if isinstance(diagram, dict) else diagram.ai_can_edit
     if (actions or endpoints) and not may_edit:
-        why = "esta aplicación es solo de consulta" if read_only else "este chat es de consulta: los cambios se piden en el chat Diseño o Desarrollo" if trigger.channel not in EDIT_CHANNELS else "la IA no puede editar este diagrama" if not diagram.ai_can_edit else "tu acceso es de solo lectura"
+        why = "esta aplicación es solo de consulta" if read_only else "este chat es de consulta: los cambios se piden en el chat Diseño o Desarrollo" if trigger_channel not in EDIT_CHANNELS else "la IA no puede editar este diagrama" if not ai_can_edit else "tu acceso es de solo lectura"
         return compose_reply(reply, [], [f"No cambié el diagrama porque {why}"]), 0, {"classes": [], "relations": []}
     done, skipped, touched = await apply_actions(db, requester, diagram, actions)
     applied = len(done)
-    if endpoints and trigger.channel != "desarrollo": skipped.append("Los endpoints de lógica de negocio se diseñan en el chat Desarrollo")
+    if endpoints and trigger_channel != "desarrollo": skipped.append("Los endpoints de lógica de negocio se diseñan en el chat Desarrollo")
     elif endpoints:
         proposed, refused = await apply_endpoints(db, requester, diagram, endpoints); done += proposed; skipped += refused
     return compose_reply(reply, done, skipped), applied, touched
+
+
+def _mongo_snapshots(diagram):
+    if not diagram: return [], []
+    classes = []
+    by_id = {}
+    for item in diagram.get("classes", []):
+        attrs = [SimpleNamespace(id=uuid.UUID(a["id"]), class_id=uuid.UUID(item["id"]), name=a["name"], type=a.get("type", "string")) for a in item.get("attributes", [])]
+        methods = [SimpleNamespace(id=uuid.UUID(m["id"]), class_id=uuid.UUID(item["id"]), name=m["name"], return_type=m.get("return_type", "void")) for m in item.get("methods", [])]
+        model = SimpleNamespace(id=uuid.UUID(item["id"]), diagram_id=uuid.UUID(diagram["id"]), name=item["name"], x=item.get("x", 80), y=item.get("y", 80), attributes=attrs, methods=methods)
+        classes.append(model); by_id[item["id"]] = model
+    relations = []
+    for item in diagram.get("relations", []):
+        source, target = by_id.get(item["source_id"]), by_id.get(item["target_id"])
+        if not source or not target: continue
+        relations.append(SimpleNamespace(id=uuid.UUID(item["id"]), diagram_id=uuid.UUID(diagram["id"]), source_id=source.id, target_id=target.id,
+            source=source, target=target, type=RelationType(item["type"]), label=item.get("label"),
+            source_multiplicity=item.get("source_multiplicity"), target_multiplicity=item.get("target_multiplicity"),
+            source_endpoint=uuid.UUID(item["source_endpoint"]) if item.get("source_endpoint") else None,
+            target_endpoint=uuid.UUID(item["target_endpoint"]) if item.get("target_endpoint") else None,
+            source_endpoint_type=item.get("source_endpoint_type", "class"), target_endpoint_type=item.get("target_endpoint_type", "class")))
+    return classes, relations
+async def _handle_mongo_turn(store, diagram_id, trigger_id, requester_id, read_only=False):
+    from .. import main
+    from ..mongo_routes import _chat_json
+    async with _locks.setdefault(str(diagram_id), asyncio.Lock()):
+        did, mid, uid = str(diagram_id), str(trigger_id), int(requester_id)
+        trigger = store.chat_messages.find_one({"id": mid, "diagram_id": did})
+        requester = store.user_by_id(uid, active=True)
+        diagram = store.diagram_by_id(did)
+        if not (trigger and requester and diagram): return
+        try: access(store, requester, did)
+        except HTTPException: return
+        channel = trigger.get("channel") if trigger.get("channel") in CHANNELS else "diseno"
+        await main.publish(did, "ai.thinking", {"requester": requester["name"], "message_id": mid, "channel": channel})
+        applied, touched = 0, {"classes": [], "relations": []}
+        try:
+            if not diagram.get("ai_enabled", True):
+                text = f"{requester['name']}, la IA está desactivada en este diagrama."
+            else:
+                try: can_edit(store, requester, did); may_edit = bool(diagram.get("ai_can_edit", True)) and not read_only and channel in EDIT_CHANNELS
+                except HTTPException: may_edit = False
+                text, applied, touched = await _answer(store, requester, diagram, trigger, may_edit, read_only)
+        except Exception as exc:
+            logger.warning("ai_turn_failed exception_class=%s", type(exc).__name__)
+            text = f"{requester['name']}, algo falló al procesar tu pedido. Probá de nuevo."
+        posted_message = {"id": str(uuid.uuid4()), "diagram_id": did, "author_user_id": None, "author_kind": "ai",
+                          "content": text[:MAX_REPLY], "reply_to_id": mid, "channel": channel, "created_at": datetime.now(timezone.utc)}
+        store.chat_messages.insert_one(posted_message)
+        store.record_activity(did, None, "ai.responded", "chat", posted_message["id"], f"IA respondió a {requester['name']}", "ai")
+        posted = _chat_json(store, posted_message)
+        await main.publish(did, "chat.message", {"message": posted})
+        await main.publish(did, "ai.done", {"message_id": posted["id"], "trigger_id": mid, "channel": channel,
+                          "applied": applied, "changed_class_ids": touched["classes"], "changed_relation_ids": touched["relations"]})

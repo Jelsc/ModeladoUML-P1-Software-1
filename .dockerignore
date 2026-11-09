@@ -1,4 +1,7 @@
 .env
+firebase-adminsdk.json
+google-services.json
+mobile-observer/android/app/google-services.json
 .git
 node_modules
 dist

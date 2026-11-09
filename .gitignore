@@ -1,4 +1,7 @@
 .env
+firebase-adminsdk.json
+google-services.json
+mobile-observer/android/app/google-services.json
 __pycache__/
 *.py[cod]
 .pytest_cache/

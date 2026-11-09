@@ -31,7 +31,7 @@ from exporters.xmi import export_xmi, parse_xmi, replace_diagram
 from exporters.xmi_merge import merge_diagram
 
 app = FastAPI(title="Collaborative UML Editor")
-app.include_router(vision_router)
+if settings.PERSISTENCE_BACKEND != "mongodb": app.include_router(vision_router)
 app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in settings.CORS_ORIGINS.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class Credentials(BaseModel):
@@ -269,8 +269,15 @@ NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 def member_json(member, is_owner=False):
     account = member if is_owner else member.user
     return {"id": account.id, "email": account.email, "name": account.name, "role": "owner" if is_owner else member.role, "active": True, "is_owner": is_owner}
-def admin_only(user):
-    if user.role != "admin": raise HTTPException(403, "Se requiere el rol de administrador")
+def admin_only(user, store=None):
+    if isinstance(user, dict):
+        if user.get("role") != "admin": raise HTTPException(403, "Se requiere el rol de administrador")
+    else:
+        if user.role != "admin": raise HTTPException(403, "Se requiere el rol de administrador")
+    if store is not None:
+        state = store.admin_state.find_one({"_id": "active_admins"})
+        user_id = user.get("id") if isinstance(user, dict) else user.id
+        if not state or user_id not in state.get("user_ids", []): raise HTTPException(403, "Se requiere el rol de administrador")
 def protect_admin_invariant(db, target, actor, values):
     self_change = target.id == actor.id
     becoming_inactive = values.get("active") is False
@@ -287,7 +294,13 @@ def duplicate_email(db, email, exclude_id=None):
 async def publish(diagram_id, event, payload): await collaboration.publish(str(diagram_id), {"event": event, **payload})
 
 @app.get("/health")
-def health(): return {"ok": True}
+def health():
+    from .push_notifications import push_notifications
+    return {"ok": True, "push_available": push_notifications.enabled}
+@app.get("/notifications/status")
+def notification_status():
+    from .push_notifications import push_notifications
+    return {"push_available": push_notifications.enabled}
 @app.post("/auth/sign-in")
 def sign_in(body: Credentials, db: Session = Depends(get_db)):
     user = db.query(User).filter_by(email=normalized_email(body.email), active=True).first()
@@ -753,3 +766,51 @@ async def notification_websocket(websocket: WebSocket, token: str = "", db: Sess
         while True: await websocket.receive_text()
     except WebSocketDisconnect: pass
     finally: await collaboration.leave_user(key, websocket)
+
+
+if settings.PERSISTENCE_BACKEND not in ("postgresql", "mongodb"):
+    raise RuntimeError("PERSISTENCE_BACKEND must be 'postgresql' or 'mongodb'")
+
+if settings.PERSISTENCE_BACKEND == "mongodb":
+    from .mongo_routes import router as mongo_router
+    from .mongo_store import MongoStore
+
+    mongo_route_keys = {
+        (route.path, method)
+        for route in mongo_router.routes
+        for method in (getattr(route, "methods", None) or {"WEBSOCKET"})
+    }
+    blocked_legacy_paths = {
+        "/assistant/transcribe", "/assistant/parse", "/assistant/execute",
+        "/diagrams/{diagram_id}/sql/parse", "/diagrams/{diagram_id}/sql",
+        "/diagrams/{diagram_id}/sql/apply", "/diagrams/{diagram_id}/export",
+        "/diagrams/{diagram_id}/xmi", "/diagrams/{diagram_id}/xmi/validate",
+        "/diagrams/{diagram_id}/xmi/import", "/diagrams/{diagram_id}/deployment",
+        "/diagrams/{diagram_id}/deployment/credentials", "/diagrams/{diagram_id}/deployment/postman",
+    }
+    filtered = []
+    for route in app.router.routes:
+        route_methods = getattr(route, "methods", set()) or {"WEBSOCKET"}
+        replaced = any((route.path, method) in mongo_route_keys for method in route_methods)
+        blocked = route.path in blocked_legacy_paths or route.path.startswith("/vision/")
+        if not replaced and not blocked:
+            filtered.append(route)
+    app.router.routes = filtered
+    app.include_router(mongo_router)
+
+    @app.on_event("startup")
+    def initialize_mongo_store():
+        store = getattr(app.state, "mongo_store", None)
+        if store is None:
+            store = MongoStore(settings.MONGODB_URL, settings.MONGODB_DATABASE)
+            store.initialize()
+            app.state.mongo_store = store
+        collaboration.bind_mongo_store(store)
+
+    @app.on_event("shutdown")
+    def close_mongo_store():
+        store = getattr(app.state, "mongo_store", None)
+        if store is not None:
+            store.close()
+            app.state.mongo_store = None
+            collaboration.bind_mongo_store(None)

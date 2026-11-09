@@ -2,14 +2,18 @@ import asyncio, json, uuid
 from collections import defaultdict
 from redis.asyncio import Redis
 from .config import settings
+from .push_notifications import EVENTS, push_notifications
 
 class Collaboration:
     def __init__(self):
         self.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        self.mongo_store = None
         self.clients = defaultdict(dict)
         self.tasks = {}
         self.user_clients = defaultdict(set)
         self.user_tasks = {}
+    def bind_mongo_store(self, store):
+        self.mongo_store = store
     async def join(self, diagram, websocket):
         connection_id = uuid.uuid4().hex
         await websocket.accept(); self.clients[diagram][websocket] = connection_id
@@ -27,7 +31,12 @@ class Collaboration:
                     try: await client.send_text(message["data"])
                     except Exception: self.clients[diagram].pop(client, None)
         finally: await pubsub.close()
-    async def publish(self, diagram, event): await self.redis.publish(f"diagram:{diagram}", json.dumps(event))
+    async def publish(self, diagram, event):
+        await self.redis.publish(f"diagram:{diagram}", json.dumps(event))
+        if event.get("event") in EVENTS and settings.PERSISTENCE_BACKEND == "mongodb":
+            store = self.mongo_store
+            if store is not None:
+                asyncio.create_task(push_notifications.publish(store, str(diagram), event))
     async def leave(self, diagram, websocket):
         self.clients[diagram].pop(websocket, None)
         if not self.clients[diagram]:

@@ -8,7 +8,7 @@ Detailed per-area rules load automatically from `.claude/rules/` when you touch 
 
 ## Stack (verified in code)
 
-- Backend: Python, FastAPI, SQLAlchemy 2, Alembic, PostgreSQL 16, Redis 7 (`backend/`).
+- Backend: Python, FastAPI, PyMongo/MongoDB 7 platform runtime, Redis 7; SQLAlchemy 2/Alembic remain for explicit historical PostgreSQL mode (`backend/`).
 - Frontend: React + Vite, plain JS/JSX, no router/test/lint libs (`frontend/`).
 - Mobile: Flutter/Dart, llamadart (local GGUF LLM), sherpa_onnx (offline ASR), sqflite (`mobile/`).
 - Infra: Docker Compose, Nginx (deploy gateway + prod frontend), certbot (prod profile).
@@ -19,8 +19,8 @@ Detailed per-area rules load automatically from `.claude/rules/` when you touch 
 | Area | Location |
 |---|---|
 | REST + WebSocket API, all schemas | `backend/app/main.py` (single file, ~600 lines) |
-| ORM models | `backend/app/models.py` |
-| Migrations | `backend/alembic/versions/0001..0007` |
+| Legacy ORM models | `backend/app/models.py` |
+| Historical PostgreSQL migrations | `backend/alembic/versions/0001..0007` (skipped by MongoDB runtime) |
 | Roles / access checks | `backend/app/permissions.py`, `security.py` |
 | Realtime (Redis pub/sub) | `backend/app/collaboration.py` |
 | Docker deployments | `backend/app/deployment.py`, `deployment_credentials.py` |
@@ -35,10 +35,10 @@ Detailed per-area rules load automatically from `.claude/rules/` when you touch 
 
 ## Commands
 
-Docker is the supported way to run the system. A `.env` is required (`.env.example` is the template; `POSTGRES_DB/USER/PASSWORD` and `JWT_SECRET` are mandatory in compose).
+Docker is the supported way to run the system. Copy `.env.example` to `.env`; `JWT_SECRET` is required. Compose starts MongoDB 7 for platform persistence. Generated Spring projects continue to use PostgreSQL.
 
 ```bash
-docker compose --env-file .env up                               # dev: Vite HMR :8080, API :8000
+docker compose --env-file .env up --build                       # dev: Vite HMR :8080, API :8000, MongoDB platform store
 docker compose --env-file .env up --build backend               # only after backend code/deps change
 docker compose --env-file .env --profile production up --build  # prod bundle :8081 (+ certbot)
 ```
@@ -52,6 +52,7 @@ cd mobile && flutter test [test/url_test.dart]         # also: flutter analyze, 
 
 Test caveats (details in `.claude/rules/backend.md` and `mobile.md`):
 - Backend runs on Python 3.12 in Docker; `pytest` is not in any requirements file. Do not use the host's Python 3.14 (SQLAlchemy 2.0.36 fails to collect).
+- `backend/tests/conftest.py` explicitly selects historical PostgreSQL mode for SQL tests.
 - Some `backend/tests/*_contract.py` tests are known-stale (they assert exact frontend source text). Do not edit tests or code to turn them green without asking.
 - `flutter` commands may rewrite `mobile/analysis_options.yaml` and `mobile/pubspec.lock`; check `git status` afterwards.
 
@@ -62,7 +63,7 @@ No lint/typecheck exists for backend or frontend. Frontend build is `npm run bui
 **Before any task**
 1. Find the relevant files with Grep/Glob first; read only those, and only the needed line ranges. `main.py` is large, so grep for the route or schema name instead of reading it whole.
 2. Never read or list: `node_modules/`, `dist/`, `__pycache__/`, `.pytest_cache/`, `package-lock.json`, `*.gguf`, `*.ort`, `*.eap`, `mobile/build/`, `mobile/.dart_tool/`, `backend/exporters/generated/`, `backend/exporters/json/`.
-3. `.env.example` is readable (placeholders only); real `.env*` files are blocked and must never be read or edited. Variable names are already in `.claude/rules/deployment-and-data.md`, so read the template only for values. `.atl/` is Gentle AI tooling state, not project code: ignore it and do not commit its changes.
+3. `.env.example` contains placeholders; real `.env` files must never be read or edited. Variable names are listed in `.claude/rules/deployment-and-data.md`. `.atl/` is Gentle AI tooling state, not project code: ignore it and do not commit its changes.
 4. If code and README disagree, trust the code. Known stale spot: root README says Android `SpeechRecognizer`; the code uses sherpa_onnx (no `SpeechRecognizer` in `mobile/`).
 
 **Scope and style**

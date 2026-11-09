@@ -307,8 +307,8 @@ Para simularlo (lo hacés vos, porque implica editar `.env`): poné temporalment
 | La IA responde, pero no edita | Ajustes de la IA (¿puede editar?), tu rol (¿viewer?) o pidió algo prohibido (borrar/renombrar clases). |
 | No aparece la tarjeta de novedades | Es tu primera visita, o no hubo cambios de otros desde que lo marcaste visto. |
 | Mensajes que no llegan en tiempo real | WebSocket caído: recargar la página. |
-| Ver la base de datos (solo lectura) | `docker compose --env-file .env exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select summary, actor_kind from activity_log order by created_at desc limit 10"'` |
-| Versión de migraciones | Misma consulta con `select version_num from alembic_version` → debe decir `0013_diagram_visits`. |
+| Ver actividad de plataforma (solo lectura) | `docker compose --env-file .env exec -T mongodb mongosh --quiet modeladouml --eval 'db.activity.find({}, {summary:1, actor_kind:1, _id:0}).sort({created_at:-1}).limit(10).forEach(printjson)'` |
+| Ver colecciones de plataforma | `docker compose --env-file .env exec -T mongodb mongosh --quiet modeladouml --eval 'db.getCollectionNames()'` |
 
 ---
 

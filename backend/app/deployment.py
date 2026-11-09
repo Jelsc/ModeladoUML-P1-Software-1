@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -319,3 +320,92 @@ def deploy(deployment_id):
         db.commit()
     finally:
         db.close()
+
+
+def deploy_mongo(store, deployment_id):
+    """Build the same generated Spring/PostgreSQL deployment from Mongo metadata."""
+    deployment = store.deployments.find_one({"id": int(deployment_id)})
+    if not deployment:
+        return
+
+    def update(**values):
+        values["updated_at"] = datetime.now(timezone.utc)
+        store.deployments.update_one({"id": int(deployment_id)}, {"$set": values})
+        deployment.update(values)
+
+    try:
+        update(status="building", error_summary=None, warning_summary=None)
+        slug = deployment["slug"]
+        container, database, image = _safe_names(slug)
+        update(container_name=container, db_container_name=database, image_name=image)
+        source = json.loads(deployment["project_json"])
+        endpoints = [spec for spec in source.get("endpoints") or [] if isinstance(spec, dict)]
+        skipped = []
+        files = build_project(source, report=skipped)
+        digest = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+        build_root = Path(settings.DEPLOY_BUILD_DIR).resolve() / slug
+        if build_root.parent != Path(settings.DEPLOY_BUILD_DIR).resolve():
+            raise ValueError("Directorio de construcción inválido")
+        _write_project(build_root, files)
+        update(project_hash=digest)
+        _remove_container(container)
+        _remove_container(database)
+        build_command = ["docker", "build", "--pull=false", "--tag", image, str(build_root)]
+        announcement = None
+        if skipped:
+            warning = ("No se generaron estos endpoints: " + "; ".join(skipped))[:1500]
+            update(warning_summary=warning)
+            announcement = f"⚠ Despliegue de {slug}: {warning}"
+        try:
+            _run(build_command, timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler")
+        except DockerCommandError as error:
+            if not endpoints: raise
+            errors = compile_errors(error.output)
+            names = ", ".join(f"{item.get('class_name', '?')}.{item.get('name', '?')}" for item in endpoints)
+            detail = "\n".join(f"• {item}" for item in errors) or f"• {diagnostic(error.output, '')[-300:]}"
+            _write_project(build_root, build_project(source, with_endpoints=False))
+            _run(build_command, timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler")
+            warning = (f"Los endpoints de la IA no compilaron; se desplegó solo el CRUD. Omitidos: {names}.\n{detail}")[:1500]
+            update(warning_summary=warning)
+            announcement = f"⚠ El despliegue usó solo el CRUD porque los endpoints aprobados no compilaron.\nOmitidos: {names}.\nErrores del compilador:\n{detail}\nPídanme que los corrija en este chat y vuelvan a desplegar."
+        _run(["docker", "volume", "create", f"uml-generated-data-{slug}"], timeout=30, stage="database.volume")
+        deployment_record = type("DeploymentRecord", (), deployment)()
+        database_username, database_password = database_identity(deployment_record)
+        _run(_database_run_args(database, slug, database_username, database_password), timeout=60, stage="database.start")
+        _wait_healthy(database)
+        update(status="starting")
+        _run(["docker", "run", "--detach", "--name", container, "--network", settings.DEPLOY_NETWORK,
+              "--memory", "512m", "--cpus", "1", "--pids-limit", "256", "--restart", "on-failure:3",
+              "--label", "uml.generated=true", "--label", f"uml.slug={slug}", "--env",
+              f"SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/{DATABASE_NAME}", "--env", f"SPRING_DATASOURCE_USERNAME={database_username}",
+              "--env", f"SPRING_DATASOURCE_PASSWORD={database_password}", image], timeout=60, stage="application.start")
+        _wait_healthy(container, timeout=180)
+        write_route(slug, container)
+        update(status="running", url=deployment_url(slug), updated_at=datetime.now(timezone.utc))
+        if announcement:
+            _announce_mongo(store, deployment["diagram_id"], announcement)
+    except Exception as exc:
+        deployment.update(status="failed", url=None, error_summary=str(exc)[:500])
+        try:
+            cleanup(type("DeploymentRecord", (), deployment)())
+        except Exception:
+            pass
+        update(status="failed", url=None, error_summary=str(exc)[:500])
+
+
+def _announce_mongo(store, diagram_id, text):
+    """Best-effort deployment notice with the same Desarrollo chat event contract."""
+    try:
+        message = {
+            "id": str(uuid.uuid4()), "diagram_id": str(diagram_id), "author_user_id": None,
+            "author_kind": "ai", "content": text[:2000], "reply_to_id": None,
+            "channel": "desarrollo", "created_at": datetime.now(timezone.utc),
+        }
+        store.chat_messages.insert_one(message)
+        payload = {**message, "author_name": None, "created_at": message["created_at"].isoformat()}
+        from redis import Redis
+        client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        client.publish(f"diagram:{diagram_id}", json.dumps({"event": "chat.message", "message": payload}))
+        client.close()
+    except Exception:
+        pass

@@ -48,6 +48,8 @@ Alex is available at `http://localhost:8090`, with backend health at `http://loc
 
 The API requires JWT authentication for diagrams and exports. WebSockets use the JWT as a query parameter and publish events through Redis; a client receives its own persisted mutation once through the Redis subscriber and does not direct-echo it.
 
+The separate read-only Flutter observer in `mobile-observer/` supports Firebase Cloud Messaging on Android. Keep `firebase-adminsdk.json` and `google-services.json` at the repository root; both are ignored, and the service-account file is secret. See [`docs/deployment.md`](docs/deployment.md) and [`mobile-observer/README.md`](mobile-observer/README.md) for configuration and verification.
+
 During collaborative editing, cursor and class movement events are coalesced latest-only per stream and sent at a stable 16 ms interval, approximately 60 Hz. Rendering remains bounded by `requestAnimationFrame`, and class positions are persisted only on pointer release. The higher event rate reduces perceived motion latency, but can use more network traffic and CPU when many collaborators are active.
 # Despliegue local de backends
 
