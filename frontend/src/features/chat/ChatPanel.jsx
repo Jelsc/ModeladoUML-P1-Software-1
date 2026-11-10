@@ -72,7 +72,7 @@ export function ChatPanel({ channel, onChannel, unreadByChannel = {}, endpoints 
           </li>;
         })}
       </ol>
-      {current.id === "desarrollo" && endpoints && <EndpointList {...endpoints} />}
+      {(current.id === "desarrollo" || current.id === "test") && endpoints && <EndpointList {...endpoints} canEdit={endpoints.canEdit && current.id === "desarrollo"} />}
       {thinkingText && <p className="board-chat-thinking" role="status"><span className="board-chat-dots" aria-hidden="true"><i /><i /><i /></span>{thinkingText}</p>}
       {aiSettings && <AiSettings {...aiSettings} />}
       {error && <p className="error board-chat-error" role="alert">{error} <button type="button" className="ghost" onClick={onDismissError}>Ocultar</button></p>}

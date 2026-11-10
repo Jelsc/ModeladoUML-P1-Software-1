@@ -23,7 +23,15 @@ ADMIN_STATE = "admin_state"
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    """Now in UTC at millisecond precision: that is all BSON stores, so what we return and what we read back agree."""
+    now = datetime.now(timezone.utc)
+    return now.replace(microsecond=now.microsecond // 1000 * 1000)
+
+
+def iso_utc(value: datetime) -> str:
+    """ISO-8601 with an explicit UTC offset. PyMongo reads datetimes back naive (UTC); without the offset a browser would parse them as
+    local time and, in the chat, messages loaded from history would sort hours away from the ones that just arrived."""
+    return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)).isoformat()
 
 
 def stable_uuid(value: Any = None) -> str:

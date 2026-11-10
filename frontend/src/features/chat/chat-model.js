@@ -17,13 +17,23 @@ export const bumpUnread = (unread, channel) => ({ ...unread, [channel]: (unread[
 export const clearUnread = (unread, channel) => unread[channel] ? { ...unread, [channel]: 0 } : unread;
 export const totalUnread = (unread) => Object.values(unread).reduce((sum, count) => sum + count, 0);
 
-const timeOf = (message) => Date.parse(message.created_at) || 0;
+// A timestamp with no offset ("2026-11-10T15:04:05.123") is UTC. Without this a browser reads it as LOCAL time, and messages loaded from
+// history would sort hours away from the ones that just arrived (new messages jumping to the top of the chat).
+const HAS_OFFSET = /(Z|[+-]\d{2}:?\d{2})$/i;
+export const parseServerDate = (value) => {
+  const text = String(value ?? "").trim();
+  return Date.parse(text && !HAS_OFFSET.test(text) && /T/.test(text) ? `${text}Z` : text);
+};
+const timeOf = (message) => parseServerDate(message.created_at) || 0;
 
-// Idempotent merge: the same message can arrive from the POST response and from the realtime event.
+// Same instant (BSON keeps milliseconds): an answer goes after the question it replies to, otherwise by id.
+const byConversation = (a, b) => timeOf(a) - timeOf(b) || (a.reply_to_id === b.id ? 1 : b.reply_to_id === a.id ? -1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+// Idempotent merge: the same message can arrive from the POST response and from the realtime event. The chat is sequential: oldest first, newest last.
 export function mergeMessages(current, incoming) {
   const byId = new Map(current.map((message) => [message.id, message]));
   for (const message of incoming || []) if (message && message.id) byId.set(message.id, { ...byId.get(message.id), ...message });
-  return [...byId.values()].sort((a, b) => timeOf(a) - timeOf(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return [...byId.values()].sort(byConversation);
 }
 
 export const oldestCreatedAt = (messages) => messages.length ? messages[0].created_at : null;
@@ -47,7 +57,7 @@ export function replyPreview(message, messages) {
 
 const two = (value) => String(value).padStart(2, "0");
 export function formatChatTime(iso, now = new Date()) {
-  const date = new Date(iso);
+  const date = new Date(parseServerDate(iso));
   if (Number.isNaN(date.getTime())) return "";
   const clock = `${two(date.getHours())}:${two(date.getMinutes())}`;
   return date.toDateString() === now.toDateString() ? clock : `${two(date.getDate())}/${two(date.getMonth() + 1)} ${clock}`;

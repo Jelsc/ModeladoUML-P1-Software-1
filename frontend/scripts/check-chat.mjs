@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { endpointSummary, kindLabel, removeEndpoint, replaceEndpoint, sortEndpoints, statusLabel } from "../src/features/chat/endpoint-model.js";
-import { CHANNELS, CHAT_MAX_LENGTH, addThinking, applyMention, authorLabel, bumpUnread, canSend, channelOf, clearUnread, clipText, emptyChats, emptyUnread, formatChatTime, isOwnMessage, mentionOpen, mergeMessages, messageChannel, oldestCreatedAt, parseAiMessage, removeThinking, replyPreview, thinkingLabel, totalUnread } from "../src/features/chat/chat-model.js";
+import { CHANNELS, CHAT_MAX_LENGTH, addThinking, applyMention, authorLabel, bumpUnread, canSend, channelOf, clearUnread, clipText, emptyChats, emptyUnread, formatChatTime, isOwnMessage, mentionOpen, mergeMessages, messageChannel, oldestCreatedAt, parseAiMessage, parseServerDate, removeThinking, replyPreview, thinkingLabel, totalUnread } from "../src/features/chat/chat-model.js";
 
 const msg = (id, minute, extra = {}) => ({ id, created_at: `2026-01-01T12:${String(minute).padStart(2, "0")}:00+00:00`, content: id, author_kind: "user", author_user_id: 1, author_name: "Ana", ...extra });
 
@@ -17,6 +17,18 @@ assert.equal(mergeMessages([msg("a", 1)], [{ ...msg("a", 1), content: "edited" }
 // Different UTC offsets are compared as instants, not as strings.
 const offset = mergeMessages([], [msg("late", 0, { created_at: "2026-01-01T09:30:00-04:00" }), msg("early", 0, { created_at: "2026-01-01T12:00:00+00:00" })]);
 assert.deepEqual(offset.map((m) => m.id), ["early", "late"]);
+
+// The chat is sequential. A timestamp without offset is UTC (MongoDB hands them back naive); reading it as local time put history hours
+// away from new messages and sent new ones to the top of the chat.
+assert.equal(parseServerDate("2026-01-01T12:00:00.123"), Date.parse("2026-01-01T12:00:00.123Z"), "naive means UTC");
+assert.equal(parseServerDate("2026-01-01T12:00:00+00:00"), Date.parse("2026-01-01T12:00:00Z")); assert.equal(parseServerDate("2026-01-01T08:00:00-04:00"), Date.parse("2026-01-01T12:00:00Z"));
+assert.equal(parseServerDate("2026-01-01T12:00:00Z"), Date.parse("2026-01-01T12:00:00Z")); assert.ok(Number.isNaN(parseServerDate("nope")));
+const mixed = mergeMessages([msg("history", 0, { created_at: "2026-01-01T12:00:00.000" })], [msg("fresh", 0, { created_at: "2026-01-01T12:05:00.000+00:00" })]);
+assert.deepEqual(mixed.map((m) => m.id), ["history", "fresh"], "a new message goes to the END even when history had no offset");
+const sameInstant = "2026-01-01T12:00:00.000+00:00";
+assert.deepEqual(mergeMessages([msg("zz-answer", 0, { created_at: sameInstant, reply_to_id: "aa-question" })], [msg("aa-question", 0, { created_at: sameInstant })]).map((m) => m.id), ["aa-question", "zz-answer"], "an answer never sorts before its question");
+assert.deepEqual(mergeMessages([msg("aa-answer", 0, { created_at: sameInstant, reply_to_id: "zz-question" })], [msg("zz-question", 0, { created_at: sameInstant })]).map((m) => m.id), ["zz-question", "aa-answer"], "even when the ids would say the opposite");
+assert.equal(formatChatTime("2026-01-15T18:00:00.000", new Date(Date.UTC(2026, 0, 15, 20, 0, 0))).length, 5, "naive timestamps format as a clock for the same day");
 
 assert.equal(oldestCreatedAt([]), null);
 assert.equal(oldestCreatedAt(merged), merged[0].created_at);
@@ -147,7 +159,7 @@ assert.equal(replaceEndpoint(eps, ep("1", "approved", "a"))[0].status, "approved
 assert.equal(replaceEndpoint(eps, ep("2", "proposed", "b")).length, 2); assert.deepEqual(removeEndpoint(eps, "1"), []);
 const endpointsHook = read("../src/features/chat/useEndpoints.js");
 assert.match(endpointsHook, /ai\.endpoints/, "the list refreshes when anyone proposes, approves or deletes"); assert.match(endpointsHook, /\/endpoints\/\$\{id\}/);
-assert.match(dockedPanel, /current\.id === "desarrollo" && endpoints && <EndpointList/, "the endpoint list lives in the Desarrollo chat");
+assert.match(dockedPanel, /\(current\.id === "desarrollo" \|\| current\.id === "test"\) && endpoints && <EndpointList/, "the endpoint list lives in the Desarrollo and Test chats (Test cannot approve)");
 assert.match(board, /useEndpoints\(\{ diagramId: id, subscribe: collaboration\.subscribe \}\)/); assert.match(board, /canEdit: !readOnly/, "viewers cannot approve");
 assert.doesNotMatch(read("../src/features/chat/EndpointList.jsx"), /dangerouslySetInnerHTML/);
 assert.match(read("../src/features/deployment/DeploymentPanel.jsx"), /deployment\?\.warning_summary/, "the compile warning is shown in the deployment panel");

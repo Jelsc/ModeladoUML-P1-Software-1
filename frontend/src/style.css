@@ -1426,6 +1426,47 @@ select:focus {
 .board-endpoint-actions { display: flex; gap: 6px; margin-top: 6px; }
 .board-endpoint-actions button { padding: 3px 10px; font-size: .78rem; }
 .deployment-warning { white-space: pre-line; overflow-wrap: anywhere; }
+.board-endpoints-hint { margin: 6px 0 0; color: var(--text-muted); font-size: .76rem; }
+.board-endpoint { cursor: default; user-select: none; }
+.board-endpoint-flow { margin-left: auto; flex: none; padding: 2px 8px; font-size: .74rem; }
+
+/* Method life-cycle diagram (double click on an endpoint) */
+.method-flow-backdrop { z-index: 60; }
+.method-flow-modal { display: grid; gap: 12px; width: min(1040px, 100%); max-height: calc(100vh - 40px); padding: 22px 24px; overflow-y: auto; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 16px 48px var(--shadow); user-select: text; }
+.method-flow-modal h2 { margin: 2px 0 4px; font-size: 1.15rem; overflow-wrap: anywhere; }
+.method-flow-modal h3 { margin: 0 0 6px; font-size: .9rem; }
+.method-flow-modal ul { margin: 0; padding-left: 18px; }
+.method-flow-modal li { margin: 3px 0; overflow-wrap: anywhere; }
+.method-flow-description { margin: 0; color: var(--text-secondary); }
+.method-flow-warnings { padding: 8px 12px !important; list-style: none; background: color-mix(in srgb, #e3b341 14%, var(--panel)); border: 1px solid color-mix(in srgb, #e3b341 55%, var(--line)); border-radius: 8px; font-size: .85rem; }
+.method-flow-scroll { overflow: auto; max-height: 52vh; background: var(--panel-raised); border: 1px solid var(--line); border-radius: 8px; }
+.method-flow-svg { display: block; min-width: 100%; }
+.method-flow-svg text { font: 500 11.5px "DM Mono", ui-monospace, monospace; fill: var(--text); }
+.flow-lifeline { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 4 5; }
+.flow-participant rect { fill: var(--panel); stroke: var(--line-strong); stroke-width: 1.2; }
+.flow-participant.client rect { fill: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
+.flow-participant.db rect { fill: color-mix(in srgb, #4caf7d 14%, var(--panel)); }
+.flow-call, .flow-return { stroke: var(--text); stroke-width: 1.4; fill: none; }
+.flow-return { stroke-dasharray: 6 4; stroke: var(--text-secondary); }
+.flow-arrowhead { fill: var(--text-secondary); }
+.method-flow-svg .flow-label { paint-order: stroke; stroke: var(--panel-raised); stroke-width: 4px; stroke-linejoin: round; }
+.flow-self.note .flow-call { stroke-dasharray: 3 3; }
+.flow-box rect { fill: color-mix(in srgb, var(--focus) 5%, transparent); stroke: var(--focus); stroke-width: 1.2; }
+.flow-box.bucle rect { stroke: #e3b341; }
+.flow-tab { fill: var(--focus); }
+.flow-box.bucle .flow-tab { fill: #e3b341; }
+.method-flow-svg .flow-tab-text { fill: var(--accent-ink, #fff); font-weight: 700; }
+.method-flow-svg .flow-condition { fill: var(--text-secondary); font-weight: 600; }
+.flow-divider { stroke: var(--focus); stroke-width: 1.1; stroke-dasharray: 7 5; }
+.method-flow-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.method-flow-section { padding: 10px 12px; background: var(--panel-raised); border: 1px solid var(--line); border-radius: 8px; font-size: .85rem; }
+.method-flow-tests { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.method-flow-tests article { padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--focus); border-radius: 6px; font-size: .82rem; }
+.method-flow-tests p { margin: 3px 0 0; overflow-wrap: anywhere; }
+.method-flow-tests p span { color: var(--text-muted); font-weight: 600; }
+.method-flow-text summary { cursor: pointer; font-weight: 600; }
+.method-flow-text textarea { width: 100%; margin-top: 8px; box-sizing: border-box; font: 12px "DM Mono", ui-monospace, monospace; resize: vertical; }
+.method-flow-text pre { margin: 8px 0 0; padding: 8px 10px; overflow: auto; background: var(--panel-raised); border-radius: 6px; font-size: .75rem; }
 @media (max-width: 700px) {
   .app-shell.chat-docked { margin-right: 0; }
   .board-chat-panel.board-chat-dock { width: 100vw; }

@@ -15,12 +15,13 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
 from pymongo.errors import DuplicateKeyError
 from exporters.endpoints import prepare_spec, route_key
+from exporters.method_flow import build_flow
 from exporters.validator import entity_route_path
 
 from . import main as legacy
 from .collaboration import collaboration
 from .mongo_store import (
-    MongoStore, diagram_to_document, endpoint_spec_to_document, get_mongo_store, stable_uuid, utc_now,
+    MongoStore, diagram_to_document, endpoint_spec_to_document, get_mongo_store, iso_utc, stable_uuid, utc_now,
 )
 from .permissions import access, can_edit, owner
 from .security import create_token, current_user, hash_password
@@ -134,7 +135,7 @@ def _activity_json(store, activity):
             "actor_user_id": activity.get("actor_user_id"), "actor_name": actor["name"] if actor else None,
             "actor_kind": activity["actor_kind"], "action": activity["action"],
             "entity_type": activity["entity_type"], "entity_id": activity.get("entity_id"),
-            "summary": activity["summary"], "created_at": activity["created_at"].isoformat()}
+            "summary": activity["summary"], "created_at": iso_utc(activity["created_at"])}
 
 
 class DiagramBody(BaseModel):
@@ -606,7 +607,7 @@ def _endpoint_json(store, spec):
             "params": spec.get("params", []), "return_type": spec.get("return_type"),
             "has_custom_code": bool(spec.get("java_body")), "status": spec["status"],
             "created_by": author["name"] if author else None,
-            "created_at": spec["created_at"].isoformat() if spec.get("created_at") else None}
+            "created_at": iso_utc(spec["created_at"]) if spec.get("created_at") else None}
 
 
 def _editable_endpoint(store, user, endpoint_id):
@@ -649,11 +650,32 @@ async def mongo_delete_endpoint(endpoint_id: uuid.UUID, store: MongoStore = Depe
     return {"ok": True}
 
 
+def _endpoint_flow(store, user, endpoint_id):
+    """Life cycle of one endpoint (any member can read it): HTTP → controller → service → repository → database, branches, dependencies and suggested tests."""
+    spec = store.endpoint_specs.find_one({"id": _id(endpoint_id)})
+    if not spec: raise HTTPException(404, "Endpoint no encontrado")
+    diagram, _ = _find_diagram(store, user, spec["diagram_id"])
+    classes = {item["id"]: item for item in diagram.get("classes", [])}
+    cls = classes.get(spec["class_id"])
+    if not cls: raise HTTPException(404, "La clase de este endpoint ya no existe")
+    siblings = [dict(other) for other in store.endpoint_specs.find({"diagram_id": diagram["id"], "class_id": cls["id"]}, {"_id": False})]
+    related = []
+    for relation in diagram.get("relations", []):
+        mine, other = (relation["source_id"], relation["target_id"]) if relation["source_id"] == cls["id"] else (relation["target_id"], relation["source_id"]) if relation["target_id"] == cls["id"] else (None, None)
+        if mine and other in classes: related.append({"other": classes[other]["name"], "type": relation["type"], "multiplicity": f"{relation.get('source_multiplicity') or '—'} : {relation.get('target_multiplicity') or '—'}"})
+    return build_flow(dict(spec), cls["name"], [(a["name"], a.get("type", "string")) for a in cls.get("attributes", [])], siblings, related)
+
+
+@router.get("/endpoints/{endpoint_id}/flow")
+def mongo_endpoint_flow(endpoint_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    return _endpoint_flow(store, user, endpoint_id)
+
+
 def _chat_json(store, message):
     author = store.user_by_id(message["author_user_id"]) if message.get("author_user_id") is not None else None
     return {"id": message["id"], "diagram_id": message["diagram_id"], "author_user_id": message.get("author_user_id"),
             "author_name": author["name"] if author else None, "author_kind": message["author_kind"], "content": message["content"],
-            "reply_to_id": message.get("reply_to_id"), "channel": message["channel"], "created_at": message["created_at"].isoformat()}
+            "reply_to_id": message.get("reply_to_id"), "channel": message["channel"], "created_at": iso_utc(message["created_at"])}
 
 
 @router.get("/diagrams/{diagram_id}/chat")
@@ -706,7 +728,7 @@ def mongo_digest(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mongo_st
         name = actor["name"] if actor else ("IA" if item["actor_kind"] == "ai" else "Usuario eliminado")
         by_actor[name] = by_actor.get(name, 0) + 1
     chat_query = {"diagram_id": d["id"], "created_at": {"$gt": since}, "author_kind": "user", "$or": [{"author_user_id": None}, {"author_user_id": {"$ne": user["id"]}}]}
-    return {"since": since.isoformat(), "activity": [_activity_json(store, a) for a in reversed(rows[:30])],
+    return {"since": iso_utc(since), "activity": [_activity_json(store, a) for a in reversed(rows[:30])],
             "activity_total": total, "chat_total": store.chat_messages.count_documents(chat_query), "by_actor": by_actor}
 
 
@@ -714,7 +736,7 @@ def mongo_digest(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mongo_st
 def mongo_mark_seen(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
     d, _ = _find_diagram(store, user, diagram_id); now = utc_now()
     store.visits.update_one({"user_id": user["id"], "diagram_id": d["id"]}, {"$set": {"last_seen_at": now}, "$setOnInsert": {"user_id": user["id"], "diagram_id": d["id"]}}, upsert=True)
-    return {"last_seen_at": now.isoformat()}
+    return {"last_seen_at": iso_utc(now)}
 
 
 @router.get("/diagrams/{diagram_id}/xmi")

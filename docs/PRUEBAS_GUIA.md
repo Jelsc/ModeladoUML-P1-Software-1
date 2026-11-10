@@ -74,7 +74,7 @@ La suite corre en Python 3.12 dentro de Docker (el Python 3.14 de Windows no sir
 ```
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo:ro" uml-backend-test:py312 bash -c 'cd /repo && tar --exclude=node_modules --exclude=.git --exclude=mobile --exclude=.atl --exclude=dist -cf - . | tar -xf - -C /work && cd /work/backend && python -m pytest -q 2>&1 | tail -3'
 ```
-- [ ] Resultado esperado: **`21 failed, 280 passed`**.
+- [ ] Resultado esperado: **`23 failed, 328 passed`** (necesita `pymongo` y `firebase-admin` instalados; las 23 fallas son las 21 de siempre —tests viejos que leen el código fuente— más 2 de notificaciones push de la migración a MongoDB que no son de esta parte).
 - [ ] Los 21 que fallan son **los mismos de antes de empezar** (no los causamos): 18 tests de contrato obsoletos que comparan texto exacto del frontend, 2 de XMI porque falta un archivo de ejemplo en el repo, y 1 de `class_patch_contract`. Si el número de fallos sube de 21, algo se rompió.
 - Archivos de pruebas nuevos: `test_chat_api.py`, `test_activity_log.py`, `test_ai_brain.py`, `test_digest.py`.
 
@@ -137,6 +137,45 @@ Necesitás una clase con atributos, por ejemplo **Cliente** con `email` (string)
 | 2.33 | En **Diseño**, pedí un endpoint | Dice que los endpoints se diseñan en el chat Desarrollo y no guarda nada |
 | 2.34 | En `/docs`: `PATCH /endpoints/<id>` con `{"status": "otro"}` | `422` |
 | 2.35 | Exportar ZIP | El `ClienteService.java` y `ClienteController.java` del ZIP incluyen **solo** los endpoints aprobados |
+
+### 2.d Chat en orden, IA más libre y diagrama del ciclo de vida de un método
+
+**Chat secuencial.** Los mensajes se ordenan siempre del más viejo (arriba) al más nuevo (abajo) y la respuesta de la IA queda justo después de su pregunta. Antes, en la nube, un mensaje nuevo se iba al principio: el servidor mandaba la hora sin zona horaria y el navegador la leía como hora local.
+
+| # | Hacé esto | Debería pasar |
+|---|---|---|
+| 2.36 | Con el chat lleno de mensajes viejos, escribí uno nuevo | Aparece **al final**, nunca arriba |
+| 2.37 | Escribí `@ia hola` | Tu mensaje y la respuesta quedan **juntos, al final**, en ese orden |
+| 2.38 | Recargá (`F5`) | El orden es **idéntico** al de antes de recargar |
+| 2.39 | Que otra persona escriba desde otro navegador/PC (otra zona horaria) | Su mensaje llega **al final** también |
+| 2.40 | Mirá la hora que muestra cada mensaje | Coincide con tu hora local (no con 4 horas de diferencia) |
+
+**IA con más libertad.** Entiende mensajes vagos, coloquiales o incompletos y analiza cuando se lo pedís (no mete recomendaciones si solo le das una orden).
+
+| # | Hacé esto | Debería pasar |
+|---|---|---|
+| 2.41 | En Diseño: `@ia agregale el precio al producto` (sin decir el tipo) | Lo agrega con un tipo razonable y dice **cómo lo interpretó** |
+| 2.42 | `@ia que tenga email` justo después de hablar de una clase | Usa la clase de la que se venía hablando |
+| 2.43 | `@ia ponele algo para pagos` | Propone algo razonable y lo aclara, o hace **una sola** pregunta concreta |
+| 2.44 | `@ia cómo vamos?` / `@ia qué falta?` / `@ia analizá el diagrama` | Estado en una línea + hallazgos con **nombres reales** (clases sin atributos, relaciones sin multiplicidad, clases aisladas…) + hasta 3 recomendaciones y cómo aplicarlas con `@ia` |
+| 2.45 | `@ia qué recomendás para las relaciones` | Da alternativas con ventajas y desventajas |
+| 2.46 | `@ia creá la clase Pedido` (orden directa) | La crea y **no** agrega sermones ni recomendaciones |
+
+**Diagrama de flujo / ciclo de vida de un método.** En el chat **Desarrollo** o **Test**, con endpoints en la lista: **doble clic** sobre un endpoint (o el botón «Ver flujo»).
+
+| # | Hacé esto | Debería pasar |
+|---|---|---|
+| 2.47 | Doble clic en un endpoint aprobado | Se abre «Ciclo de vida del método» con un diagrama de secuencia: Cliente HTTP → Controller → Service → Repository → Base de datos y la vuelta |
+| 2.48 | Mirá un endpoint de tipo «Cambiar campo» (activar) | Hay un bloque **alt** con dos ramas: *existe* y *no existe*; la segunda termina en **500** y arriba hay un ⚠ explicando que no se traduce a 404 |
+| 2.49 | Mirá uno de «Código personalizado» con `if`, `throw`, un bucle y una llamada a otro endpoint | Las ramas aparecen como **alt / si no**, el bucle como **bucle**, el `throw` como un error que vuelve al cliente y la llamada como «llama a otroMetodo()» |
+| 2.50 | Bajá a «Depende de» / «Lo usan» | Si un método llama a otro, el primero lo lista en **Depende de** y el segundo lo lista en **Lo usan** |
+| 2.51 | «Datos que toca» | Dice si **lee**, **escribe** o **lee y escribe** la tabla y qué clases están relacionadas |
+| 2.52 | «Casos de prueba sugeridos» | Hay **uno por rama** (feliz, cada `if`, cada `throw`, id inexistente) con *Dado / Cuando / Entonces* |
+| 2.53 | Pulsá «Copiar Mermaid» y pegalo en <https://mermaid.live> | Se dibuja el mismo diagrama (sirve para documentar en un README o GitHub) |
+| 2.54 | Doble clic en un endpoint **pendiente** | Se abre igual, con la marca «todavía no se despliega» |
+| 2.55 | Con un viewer, abrí el flujo | Lo puede **ver** (solo lectura); en Test no aparecen los botones Aprobar/Eliminar |
+| 2.56 | Pulsá `Esc` o clic fuera del diagrama | Se cierra |
+| 2.57 | En **Test**: `@ia explicame cómo funciona aplicarDescuento` | Explica el recorrido con los mismos pasos que ves en el diagrama y menciona las advertencias |
 
 ---
 
