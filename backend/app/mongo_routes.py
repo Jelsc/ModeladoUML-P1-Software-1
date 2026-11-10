@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
 from pymongo.errors import DuplicateKeyError
-from exporters.endpoints import prepare_spec, route_key
+from exporters.endpoints import prepare_spec, relative_path, route_key
 from exporters.method_flow import build_flow
 from exporters.validator import entity_route_path
 
@@ -611,7 +611,7 @@ def _endpoint_json(store, spec):
     author = store.user_by_id(spec["created_by"]) if spec.get("created_by") is not None else None
     class_name = cls["name"] if cls else None
     return {"id": spec["id"], "diagram_id": spec["diagram_id"], "class_id": spec["class_id"],
-            "class_name": class_name, "route": f"{entity_route_path(class_name)}{spec['path']}" if class_name else spec["path"],
+            "class_name": class_name, "route": f"{entity_route_path(class_name)}{relative_path(class_name, spec['path'])}" if class_name else spec["path"],
             "name": spec["name"], "kind": spec["kind"], "http_method": spec["http_method"], "path": spec["path"],
             "field": spec.get("field"), "value": spec.get("value"), "description": spec.get("description", ""),
             "params": spec.get("params", []), "return_type": spec.get("return_type"),
@@ -902,7 +902,7 @@ def mongo_deployment_postman(diagram_id: uuid.UUID, store: MongoStore = Depends(
     headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
     if not deployment or deployment["status"] != "running" or not deployment.get("url"):
         raise HTTPException(409, "La colección solo está disponible mientras el despliegue está en ejecución", headers=headers)
-    collection = legacy.generate_postman_collection(json.loads(deployment["project_json"]), deployment["url"])
+    collection = legacy.generate_postman_collection(json.loads(deployment["project_json"]), deployment["url"], deployment.get("deployed_endpoints"))
     return JSONResponse(collection, headers={**headers, "Content-Disposition": f'attachment; filename="{deployment["slug"]}.postman_collection.json"'})
 
 

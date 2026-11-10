@@ -11,6 +11,9 @@ from .uap import controller_source, dispatcher_source, exception_source, sync_st
 from .endpoints import render
 
 PACKAGE = "com.generated.uml"
+# What a Java body written by the AI can use by simple name inside the generated service (the validator forbids `import` in the body itself).
+BODY_IMPORTS = ("import java.math.BigDecimal;\nimport java.math.*;\nimport java.time.*;\nimport java.time.temporal.*;\nimport java.util.*;\nimport java.util.function.*;\nimport java.util.stream.*;\n"
+                "import org.springframework.http.HttpStatus;\nimport org.springframework.web.server.ResponseStatusException;\n")
 
 
 def _type(value: object, default: str = "String") -> str:
@@ -179,7 +182,7 @@ def _repository(name, extra=""):
 
 
 def _service(name, extra=""):
-    imports = "import java.math.BigDecimal;\nimport java.time.*;\nimport java.util.*;\n" if extra else ""  # AI-written bodies may use the common value types by simple name
+    imports = BODY_IMPORTS if extra else ""  # AI-written bodies may use the common value types by simple name
     return f"package {PACKAGE}.services;\n\nimport {PACKAGE}.models.{name};\nimport {PACKAGE}.repositories.{name}Repository;\nimport org.springframework.stereotype.Service;\nimport java.util.List;\nimport java.util.Optional;\n{imports}\n@Service\npublic class {name}Service {{\n    private final {name}Repository repository;\n    public {name}Service({name}Repository repository) {{ this.repository = repository; }}\n    public List<{name}> findAll() {{ return repository.findAll(); }}\n    public Optional<{name}> findById(Long id) {{ return repository.findById(id); }}\n    public {name} save({name} entity) {{ return repository.save(entity); }}\n    public void delete(Long id) {{ repository.deleteById(id); }}\n{extra}}}\n"
 
 
@@ -259,3 +262,17 @@ def export_zip(diagram: dict) -> bytes:
         for path, content in sorted(files.items()):
             archive.writestr(PurePosixPath(path).as_posix(), content)
     return output.getvalue()
+
+
+def java_api(diagram: dict) -> list[dict]:
+    """What a Java body written by the AI can really use, per class: the entity getters and setters exactly as generated
+    (attribute "card number" is `getCard_number()`, not `getCardNumber()`) and the repository methods that exist."""
+    diagram = normalize_diagram({key: value for key, value in diagram.items() if key != "endpoints"})
+    api = []
+    for item in diagram["classes"]:
+        source = _entity(item, diagram)
+        getters = [f"{kind} {name}()" for kind, name in re.findall(r"public\s+([\w.<>, ?]+?)\s+((?:get|is)\w+)\(\)", source)]
+        setters = [f"{name}({kind})" for name, kind in re.findall(r"public\s+void\s+(set\w+)\(([\w.<>, ?]+?)\s+\w+\)", source)]
+        api.append({"clase": item["name"], "entidad": item["generated_name"], "getters": getters, "setters": setters,
+                    "repositorio": ["findAll()", "findById(Long)", "save(entity)", "count()", "existsById(Long)", "deleteById(Long)"]})
+    return api

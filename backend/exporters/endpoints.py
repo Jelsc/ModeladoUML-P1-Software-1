@@ -6,7 +6,7 @@ then falls back to plain CRUD and reports the compiler error (see app/deployment
 
 import re
 
-from .validator import JAVA_KEYWORDS
+from .validator import JAVA_KEYWORDS, entity_route_path
 
 HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 KINDS = ("find_by_field", "count", "sum_field", "set_field", "custom")
@@ -24,6 +24,13 @@ PATH = re.compile(rf"^/{SEGMENT}(?:/{SEGMENT}){{0,3}}$")
 PATH_VARIABLE = re.compile(r"\{([a-z][A-Za-z0-9]*)\}")
 # Best-effort guard for a local development MVP: the AI body must stay plain business logic over `repository` and the entity.
 FORBIDDEN_JAVA = re.compile(r"\b(Runtime|ProcessBuilder|System\s*\.\s*(exit|getenv|getProperty|setProperty)|Class\s*\.\s*forName|ClassLoader|Thread|ScriptEngine|Unsafe|MethodHandle)\b|\bjava\s*\.\s*(io|nio|net|lang\s*\.\s*reflect)\b|\bjavax?\.(script|naming)\b|\bimport\b|\bpackage\b|\.exec\s*\(|\.getClass\s*\(|\.wait\s*\(|\.notify(All)?\s*\(")
+
+
+def relative_path(class_name, path):
+    """The AI sometimes writes the whole route (/api/accounts/sum-price). The controller already carries the class base (/api/accounts), so only what follows it counts:
+    otherwise the endpoint ends up at /api/accounts/api/accounts/sum-price."""
+    base = entity_route_path(class_name)
+    return path[len(base):] if isinstance(path, str) and path.startswith(base + "/") else path
 
 
 def java_type(attribute_type):
@@ -56,7 +63,7 @@ def validate_java_body(body):
     return None
 
 
-def prepare_spec(raw, attributes, used_names=(), used_routes=()):
+def prepare_spec(raw, attributes, used_names=(), used_routes=(), class_name=None):
     """Validate a raw spec (from the AI) against the class attributes [(name, type)] and fill the defaults.
     Returns (spec, None) or (None, reason)."""
     if not isinstance(raw, dict): return None, "Endpoint inválido"
@@ -91,7 +98,7 @@ def prepare_spec(raw, attributes, used_names=(), used_routes=()):
             seen.add(pn); spec["params"].append({"name": pn, "type": pt, "source": ps})
     method = {"find_by_field": "GET", "count": "GET", "sum_field": "GET", "set_field": "POST"}.get(kind) or str(raw.get("http_method") or "").upper()
     if method not in HTTP_METHODS: return None, f"Método HTTP no soportado: {str(raw.get('http_method'))[:10]!r}"
-    path = str(raw.get("path") or "").strip() or {"find_by_field": f"/por-{_slug(spec['field'])}", "count": "/contar", "sum_field": f"/total-{_slug(spec['field'])}", "set_field": f"/{{id}}/{_kebab(name)}"}.get(kind, "")
+    path = (relative_path(class_name, str(raw.get("path") or "").strip()) if class_name else str(raw.get("path") or "").strip()) or {"find_by_field": f"/por-{_slug(spec['field'])}", "count": "/contar", "sum_field": f"/total-{_slug(spec['field'])}", "set_field": f"/{{id}}/{_kebab(name)}"}.get(kind, "")
     if not PATH.fullmatch(path) or ".." in path: return None, f"Ruta inválida: {path[:40]!r} (use segmentos en minúsculas como /por-email o /{{id}}/activar)"
     variables = _path_variables(path)
     if variables and kind in ("find_by_field", "count", "sum_field"):  # these take no path variables (find_by_field reads ?value=): use the default route instead of rejecting the AI's proposal
@@ -131,15 +138,19 @@ def render(class_name, specs, fields):
         try:
             name, kind = spec["name"], spec["kind"]
             if name in used_names or route_key(spec) in used_routes: problems.append(f"{name}: duplicado"); continue
-            mapping, rel, verb = {"GET": "GetMapping", "POST": "PostMapping", "PUT": "PutMapping", "PATCH": "PatchMapping", "DELETE": "DeleteMapping"}, spec["path"], None
+            mapping, rel, verb = {"GET": "GetMapping", "POST": "PostMapping", "PUT": "PutMapping", "PATCH": "PatchMapping", "DELETE": "DeleteMapping"}, relative_path(class_name, spec["path"]), None
             verb = mapping[spec["http_method"]]; mapped = f'    @{verb}("{rel}") '
             if kind in FIELD_TYPES:
                 resolved = fields.get(str(spec["field"]).lower())
                 if not resolved or resolved[1] not in FIELD_TYPES[kind]: problems.append(f"{name}: el atributo {spec['field']} no existe en la clase generada"); continue
                 field, jtype = resolved; cap = _cap(field)
             if kind == "find_by_field":
-                repo.append(f"    java.util.List<{class_name}> findBy{cap}({_q(jtype)} value);")
-                service.append(f"    public java.util.List<{class_name}> {name}({_q(jtype)} value) {{ return repository.findBy{cap}(value); }}")
+                if "_" in field:  # Spring Data reads "_" as a property-path separator (findByCard_number would fail when the app starts): filter in memory instead
+                    same = f"item.get{cap}() != null && item.get{cap}().compareTo(value) == 0" if jtype == "BigDecimal" else f"java.util.Objects.equals(item.get{cap}(), value)"
+                    service.append(f"    public java.util.List<{class_name}> {name}({_q(jtype)} value) {{ return repository.findAll().stream().filter(item -> {same}).collect(java.util.stream.Collectors.toList()); }}")
+                else:
+                    repo.append(f"    java.util.List<{class_name}> findBy{cap}({_q(jtype)} value);")
+                    service.append(f"    public java.util.List<{class_name}> {name}({_q(jtype)} value) {{ return repository.findBy{cap}(value); }}")
                 controller.append(f'{mapped}public java.util.List<{class_name}> {name}(@RequestParam("value") {_q(jtype)} value) {{ return service.{name}(value); }}')
             elif kind == "count":
                 service.append(f"    public long {name}() {{ return repository.count(); }}")

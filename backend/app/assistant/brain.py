@@ -19,7 +19,7 @@ from .schemas import AssistantCommand
 from sqlalchemy import or_
 from pymongo.errors import DuplicateKeyError
 
-from exporters.endpoints import KINDS as ENDPOINT_KINDS, prepare_spec, route_key
+from exporters.endpoints import KINDS as ENDPOINT_KINDS, prepare_spec, relative_path, route_key
 from exporters.method_flow import build_flow
 from exporters.validator import entity_route_path
 
@@ -75,8 +75,13 @@ CHANNEL_FOCUS = {
         "Este es el chat DESARROLLO: tienes los mismos permisos que en Diseño (puedes crear y modificar clases, atributos, métodos y relaciones con 'actions') y además diseñas la lógica de negocio del backend con 'endpoints'. "
         "Cada endpoint que propones queda PENDIENTE hasta que alguien del equipo lo apruebe; solo los aprobados se despliegan junto al CRUD de cada clase (ya generado, no lo repitas). "
         "Kinds estructurados (prefiérelos): find_by_field (buscar por un atributo, GET), count (contar registros, GET), sum_field (sumar un atributo numérico, GET), set_field (poner un atributo en un valor fijo, por ejemplo activar: POST /{id}/activar, con 'field' y 'value'). "
-        "Para cualquier otra lógica usa kind 'custom' con 'java_body': SOLO el cuerpo de un método Java del servicio (sin firma ni imports), usando el campo `repository` (Spring Data JPA de esa clase) y los getters/setters de la entidad; "
+        "Para cualquier otra lógica usa kind 'custom' con 'java_body': SOLO el cuerpo de un método Java del servicio (sin firma ni imports), usando el campo `repository` (Spring Data JPA de esa clase) y los getters/setters de la entidad. "
+        "El código DEBE compilar: usa ÚNICAMENTE los getters y setters que aparecen en 'java_api' del contexto, con ese nombre exacto (el atributo 'card number' es getCard_number(), no getCardNumber()), y SOLO los métodos de 'repositorio' de 'java_api' "
+        "(findAll, findById, save, count, existsById, deleteById; nunca inventes findByXxx: para filtrar usa repository.findAll().stream().filter(...)). "
+        "Ya están disponibles sin import: java.util.*, java.util.stream.* (Collectors), java.time.*, java.math.* (BigDecimal, RoundingMode), Optional y ResponseStatusException/HttpStatus (para un 404: throw new ResponseStatusException(HttpStatus.NOT_FOUND, \"mensaje\")). "
+        "Los atributos de tipo string se comparan con equals, los BigDecimal con compareTo; los tipos Integer/Long/Boolean son objetos y pueden ser null. Si no estás seguro de que algo exista, usa otra forma más simple. "
         "declara 'params' (name, type String|Long|Integer|Boolean|BigDecimal, source path|query), 'return_type' (String|Long|Integer|Boolean|BigDecimal|void|entity|list), 'http_method' y 'path' en minúsculas (por ejemplo /{id}/aplicar-descuento, cuyas variables deben coincidir con los params de source path). "
+        "El 'path' es RELATIVO a la clase: nunca incluyas la ruta base (usa /suma-price, no /api/accounts/suma-price, porque ya se antepone /api/accounts). "
         "Nunca propongas endpoints para clases que no existen: créalas antes en 'actions'. Explica en 'reply' qué propones y recuerda que deben aprobarlos. Usa 'backend_generado' y 'endpoints_ia' del contexto. "
         "Si preguntan cómo funciona un método o endpoint, explica su ciclo de vida paso a paso (petición → controlador → servicio → repositorio → base de datos y de vuelta), de qué otros métodos depende y quién lo usa, apoyándote en 'flujos_endpoints'; "
         "el equipo también puede ver ese flujo como diagrama con doble clic sobre el endpoint en la lista."
@@ -165,9 +170,14 @@ def build_context(db, diagram, trigger, requester):
             context["flujos_endpoints"] = [_flow_context(item, by_id, specs) for item in specs if item["class_id"] in by_id][:12]
             context["endpoints_ia"] = [{
                 "clase": by_id[item["class_id"]]["name"], "nombre": item["name"],
-                "ruta": f"{item['http_method']} {entity_route_path(by_id[item['class_id']]['name'])}{item['path']}",
+                "ruta": f"{item['http_method']} {entity_route_path(by_id[item['class_id']]['name'])}{relative_path(by_id[item['class_id']]['name'], item['path'])}",
                 "tipo": item["kind"], "estado": "aprobado" if item["status"] == "approved" else "pendiente de aprobación",
             } for item in specs if item["class_id"] in by_id]
+            try:  # the real Java names (getCard_number, not getCardNumber): a body written against the original attribute names does not compile
+                from ..mongo_routes import _diagram_json
+                from exporters.project_builder import java_api
+                context["java_api"] = java_api(_diagram_json(diagram))
+            except Exception: logger.warning("java_api_unavailable")
         return context
     classes = db.query(UmlClass).filter_by(diagram_id=diagram.id).order_by(UmlClass.name).all()
     relations = db.query(Relation).filter_by(diagram_id=diagram.id).all()
@@ -185,7 +195,7 @@ def build_context(db, diagram, trigger, requester):
     }
     if trigger.channel != "diseno":
         context["backend_generado"] = backend_outline(classes, relations)
-        context["endpoints_ia"] = [{"clase": e.uml_class.name, "nombre": e.name, "ruta": f"{e.http_method} {entity_route_path(e.uml_class.name)}{e.path}", "tipo": e.kind, "estado": "aprobado" if e.status == "approved" else "pendiente de aprobación"} for e in db.query(EndpointSpec).filter_by(diagram_id=diagram.id).order_by(EndpointSpec.created_at).all() if e.uml_class]
+        context["endpoints_ia"] = [{"clase": e.uml_class.name, "nombre": e.name, "ruta": f"{e.http_method} {entity_route_path(e.uml_class.name)}{relative_path(e.uml_class.name, e.path)}", "tipo": e.kind, "estado": "aprobado" if e.status == "approved" else "pendiente de aprobación"} for e in db.query(EndpointSpec).filter_by(diagram_id=diagram.id).order_by(EndpointSpec.created_at).all() if e.uml_class]
     return context
 
 
@@ -382,7 +392,7 @@ async def apply_endpoints(db, requester, diagram, items):
                 existing = list(db.endpoint_specs.find({"class_id": cls["id"]}))
                 spec, error = prepare_spec(raw, [(a["name"], a.get("type", "string")) for a in cls.get("attributes", [])],
                     {value["name"] for value in existing},
-                    {route_key({"http_method": value["http_method"], "path": value["path"]}) for value in existing})
+                    {route_key({"http_method": value["http_method"], "path": value["path"]}) for value in existing}, class_name=cls["name"])
                 if error:
                     skipped.append(f"{cls['name']}.{str(raw.get('name') or '?')[:40]}: {error}"); continue
                 endpoint = endpoint_spec_to_document({"id": stable_uuid(), "diagram_id": doc["id"], "class_id": cls["id"],
@@ -404,7 +414,7 @@ async def apply_endpoints(db, requester, diagram, items):
             cls = next((c for c in db.query(UmlClass).filter_by(diagram_id=diagram.id) if c.name.lower() == str(raw.get("class_name") or "").strip().lower()), None)
             if cls is None: skipped.append(f"{label}: la clase no existe en el diagrama"); continue
             existing = db.query(EndpointSpec).filter_by(class_id=cls.id).all()
-            spec, error = prepare_spec(raw, [(a.name, a.type) for a in cls.attributes], {e.name for e in existing}, {route_key({"http_method": e.http_method, "path": e.path}) for e in existing})
+            spec, error = prepare_spec(raw, [(a.name, a.type) for a in cls.attributes], {e.name for e in existing}, {route_key({"http_method": e.http_method, "path": e.path}) for e in existing}, class_name=cls.name)
             if error: skipped.append(f"{cls.name}.{str(raw.get('name') or '?')[:40]}: {error}"); continue
             row = EndpointSpec(id=uuid.uuid4(), diagram_id=diagram.id, class_id=cls.id, status="proposed", created_by=requester.id, **spec)
             db.add(row); db.flush()

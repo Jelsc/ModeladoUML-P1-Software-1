@@ -7,7 +7,7 @@ calls to other endpoints of the same service): it is a faithful outline of the c
 
 import re
 
-from .endpoints import java_type
+from .endpoints import java_type, relative_path
 from .validator import entity_route_path, resource_name
 
 PARTICIPANTS = [("client", "Cliente HTTP"), ("controller", "Controller"), ("service", "Service"), ("repository", "Repository"), ("db", "Base de datos")]
@@ -196,7 +196,7 @@ def _trim(steps, budget):
 def build_flow(spec, class_name, attributes, siblings=(), relations=()):
     """Life cycle of `spec` (a stored endpoint spec dict). `attributes` = [(name, type)], `siblings` = the other specs of the same class,
     `relations` = [{"other", "type", "multiplicity"}] of the class."""
-    route = f"{entity_route_path(class_name)}{spec['path']}"; table = resource_name(class_name)
+    route = f"{entity_route_path(class_name)}{relative_path(class_name, spec['path'])}"; table = resource_name(class_name)
     types = {n.lower(): java_type(t) for n, t in attributes}
     siblings = [s for s in siblings if s.get("name") != spec["name"]]
     if spec["kind"] == "custom": steps, tests, calls, accesses, warnings = _custom(spec, class_name, route, table, siblings)

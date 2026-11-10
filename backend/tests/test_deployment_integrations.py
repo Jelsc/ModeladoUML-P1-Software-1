@@ -39,7 +39,10 @@ def test_generated_gateway_route_is_path_based_and_strips_prefix():
     assert "location = /deployments/gymnasio-f3d823e4" in route
     assert "return 301 /deployments/gymnasio-f3d823e4/;" in route
     assert "location /deployments/gymnasio-f3d823e4/" in route
-    assert "proxy_pass http://uml-generated-gymnasio-f3d823e4:8080/;" in route
+    # resolved per request, so a deployment whose container is gone cannot stop nginx at startup
+    assert "resolver 127.0.0.11" in route and "set $uml_upstream uml-generated-gymnasio-f3d823e4;" in route
+    assert "rewrite ^/deployments/gymnasio-f3d823e4/(.*)$ /$1 break;" in route and "proxy_pass http://$uml_upstream:8080;" in route
+    assert "proxy_pass http://uml-generated" not in route, "no hostname in proxy_pass: nginx would resolve it when loading the file"
 
 
 @pytest.mark.parametrize("payload", [

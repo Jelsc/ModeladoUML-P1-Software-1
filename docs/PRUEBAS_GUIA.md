@@ -74,7 +74,7 @@ La suite corre en Python 3.12 dentro de Docker (el Python 3.14 de Windows no sir
 ```
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo:ro" uml-backend-test:py312 bash -c 'cd /repo && tar --exclude=node_modules --exclude=.git --exclude=mobile --exclude=.atl --exclude=dist -cf - . | tar -xf - -C /work && cd /work/backend && python -m pytest -q 2>&1 | tail -3'
 ```
-- [ ] Resultado esperado: **`25 failed, 341 passed`** (necesita `pymongo` y `firebase-admin` instalados; las 25 fallas son las 21 de siempre —tests viejos que leen el código fuente— más 4 de la migración a MongoDB y las notificaciones push del compañero, que no son de esta parte: 3 de `test_push_notifications` y 1 de `test_mongo_store` que no conoce la colección `notifications`).
+- [ ] Resultado esperado: **`25 failed, 360 passed`** (necesita `pymongo` y `firebase-admin` instalados; las 25 fallas son las 21 de siempre —tests viejos que leen el código fuente— más 4 de la migración a MongoDB y las notificaciones push del compañero, que no son de esta parte: 3 de `test_push_notifications` y 1 de `test_mongo_store` que no conoce la colección `notifications`).
 - [ ] Los 21 que fallan son **los mismos de antes de empezar** (no los causamos): 18 tests de contrato obsoletos que comparan texto exacto del frontend, 2 de XMI porque falta un archivo de ejemplo en el repo, y 1 de `class_patch_contract`. Si el número de fallos sube de 21, algo se rompió.
 - Archivos de pruebas nuevos: `test_chat_api.py`, `test_activity_log.py`, `test_ai_brain.py`, `test_digest.py`.
 
@@ -197,6 +197,20 @@ Por defecto la IA **no toca el lienzo**: deja sus cambios como una *propuesta* y
 | 2.67 | Un visor abre el chat | Ve las propuestas pero **no tiene** botones Aceptar/Rechazar |
 | 2.68 | El dueño desmarca «requieren la aprobación» y repite 2.58 | Se aplica directo, como antes («Hecho: …») |
 | 2.69 | En **Test** | No hay lista de propuestas: es solo consulta |
+
+### 2.f Endpoints de la IA que compilan y su prueba en Postman
+
+Al desplegar, un endpoint de la IA que no compila ya no tumba a los demás: el sistema ubica cuál falló, **la IA lo corrige** (hasta 2 intentos), y si no puede, **solo ese** queda fuera. Cada endpoint desplegado aparece en la colección de Postman con su prueba.
+
+| # | Qué hacés | Resultado esperado |
+|---|---|---|
+| 2.70 | En **Desarrollo**: `@ia haceme un endpoint que busque clientes por el número de tarjeta` (usá un atributo con espacio, como «card number») y aprobalo | La IA propone un endpoint de buscar por campo |
+| 2.71 | Desplegá | Compila y arranca. El filtro sobre campos con espacio se hace en memoria (no falla al iniciar) |
+| 2.72 | Pedile uno con lógica propia: `@ia endpoint que aplique un descuento a un cliente, con un porcentaje`, aprobalo y desplegá | Compila: la IA usa los getters reales (`getCard_number()`) y los métodos del repositorio que existen |
+| 2.73 | Si algún endpoint no compila | El chat Desarrollo avisa: «La IA corrigió automáticamente…» (queda arreglado y guardado), o «Se desplegó sin estos endpoints…» con el error del compilador. Los demás siguen funcionando |
+| 2.74 | En el panel de despliegue, descargá la colección de Postman | Cada clase tiene una carpeta **«Endpoints de la IA»** con una petición por endpoint desplegado (con su URL de ejemplo, parámetros y pruebas) |
+| 2.75 | Importá la colección en Postman y ejecutá los endpoints de la IA | Las pruebas verifican 2xx y el tipo de respuesta (lista, número, true/false o registro). Los que usan `{id}` piden un id existente |
+| 2.76 | Un endpoint que se descartó por no compilar | **No** aparece en Postman (solo lo que realmente se desplegó) |
 
 ## 3. Registro de actividad (Fase 2)
 

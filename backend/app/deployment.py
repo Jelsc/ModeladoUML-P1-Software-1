@@ -12,6 +12,7 @@ from .db import SessionLocal
 from .deployment_credentials import derive_database_identity, parse_database_runtime, redact_diagnostic
 from .models import ChatMessage, Deployment
 from exporters.project_builder import build_project
+from .endpoint_repair import build_with_repair
 
 SAFE_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}$")
 SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,90}$")
@@ -194,7 +195,9 @@ def _gateway_config(slug, container_name):
     if not SAFE_SLUG.fullmatch(slug) or not SAFE_NAME.fullmatch(container_name):
         raise ValueError("Ruta de gateway inválida")
     prefix = f"/deployments/{slug}"
-    return f"location = {prefix} {{\n    return 301 {prefix}/;\n}}\n\nlocation {prefix}/ {{\n    proxy_pass http://{container_name}:8080/;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection $connection_upgrade;\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n}}\n"
+    # The upstream is resolved on every request (variable + resolver), not when nginx loads the file: a deployment whose container no longer exists answers 502
+    # instead of making nginx fail at startup (a single stale route used to put the whole gateway in a restart loop and block every deployment).
+    return f"location = {prefix} {{\n    return 301 {prefix}/;\n}}\n\nlocation {prefix}/ {{\n    resolver 127.0.0.11 valid=5s ipv6=off;\n    set $uml_upstream {container_name};\n    rewrite ^{prefix}/(.*)$ /$1 break;\n    proxy_pass http://$uml_upstream:8080;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection $connection_upgrade;\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n}}\n"
 
 
 def write_route(slug, container_name):
@@ -322,6 +325,45 @@ def deploy(deployment_id):
         db.close()
 
 
+def _repair_llm(store, deployment):
+    """The team AI, only when it is configured and enabled for this diagram; it fixes endpoint code that does not compile."""
+    try:
+        from .assistant.llm import get_llm
+        diagram = store.diagram_by_id(deployment["diagram_id"]) if hasattr(store, "diagram_by_id") else None
+        if diagram is not None and not diagram.get("ai_enabled", True): return None
+        return get_llm()
+    except Exception:
+        return None
+
+
+def _persist_fix(store, deployment, key, body):
+    """Keep the body the AI fixed, so the endpoint compiles in the next deployments too, and leave a trace in the activity log."""
+    diagram_id = deployment["diagram_id"]
+    cls = next((item for item in (store.diagram_by_id(diagram_id) or {}).get("classes", []) if item["name"] == key[0]), None)
+    if not cls: return
+    store.endpoint_specs.update_one({"diagram_id": diagram_id, "class_id": cls["id"], "name": key[1]}, {"$set": {"java_body": body}})
+    store.record_activity(diagram_id, None, "endpoint.repaired", "endpoint", None, f"IA corrigió el código del endpoint {key[1]} de {key[0]} para que compile", "ai")
+
+
+def _label(keys): return ", ".join(f"{cls or '?'}.{name or '?'}" for cls, name in keys)
+
+
+def _repair_messages(outcome):
+    """(warning for the deployment panel, announcement for the Desarrollo chat) when the build needed the AI, dropped endpoints, or fell back to CRUD."""
+    first, mode = outcome["first_error"], outcome["mode"]
+    detail = "\n".join(f"• {cls}.{name}: {message}" for (cls, name), messages in outcome["failing"].items() for message in messages[:3])
+    if not detail and first: detail = "\n".join(f"• {item}" for item in compile_errors(first.output)) or f"• {diagnostic(first.output, '')[-300:]}"
+    fixed = f"La IA corrigió automáticamente estos endpoints para que compilen: {_label(outcome['repaired'])}." if outcome["repaired"] else ""
+    if mode == "repaired":
+        return fixed[:1500], f"{fixed}\nRevisen el código corregido en la lista de endpoints de Desarrollo."
+    if mode == "partial":
+        warning = (f"Se desplegó sin estos endpoints porque no compilaron: {_label(outcome['dropped'])}. El resto sí se desplegó.\n{detail}" + (f"\n{fixed}" if fixed else ""))[:1500]
+        return warning, f"⚠ Se desplegó sin estos endpoints porque no compilaron: {_label(outcome['dropped'])}.\nErrores del compilador:\n{detail}\nPídanme que los corrija en este chat y vuelvan a desplegar."
+    names = _label(outcome["dropped"])
+    warning = f"Los endpoints de la IA no compilaron; se desplegó solo el CRUD. Omitidos: {names}.\n{detail}"[:1500]
+    return warning, f"⚠ El despliegue usó solo el CRUD porque los endpoints aprobados no compilaron.\nOmitidos: {names}.\nErrores del compilador:\n{detail}\nPídanme que los corrija en este chat y vuelvan a desplegar."
+
+
 def deploy_mongo(store, deployment_id):
     """Build the same generated Spring/PostgreSQL deployment from Mongo metadata."""
     deployment = store.deployments.find_one({"id": int(deployment_id)})
@@ -339,35 +381,30 @@ def deploy_mongo(store, deployment_id):
         container, database, image = _safe_names(slug)
         update(container_name=container, db_container_name=database, image_name=image)
         source = json.loads(deployment["project_json"])
-        endpoints = [spec for spec in source.get("endpoints") or [] if isinstance(spec, dict)]
         skipped = []
-        files = build_project(source, report=skipped)
         digest = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         build_root = Path(settings.DEPLOY_BUILD_DIR).resolve() / slug
         if build_root.parent != Path(settings.DEPLOY_BUILD_DIR).resolve():
             raise ValueError("Directorio de construcción inválido")
-        _write_project(build_root, files)
         update(project_hash=digest)
         _remove_container(container)
         _remove_container(database)
         build_command = ["docker", "build", "--pull=false", "--tag", image, str(build_root)]
-        announcement = None
+        outcome = build_with_repair(
+            source, lambda src, with_endpoints=True, report=None: build_project(src, with_endpoints=with_endpoints, report=report),
+            lambda files: _write_project(build_root, files), lambda: _run(build_command, timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler"),
+            DockerCommandError, llm=_repair_llm(store, deployment), persist=lambda key, body: _persist_fix(store, deployment, key, body), report=skipped)
+        warning, announcement = None, None
         if skipped:
             warning = ("No se generaron estos endpoints: " + "; ".join(skipped))[:1500]
-            update(warning_summary=warning)
             announcement = f"⚠ Despliegue de {slug}: {warning}"
-        try:
-            _run(build_command, timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler")
-        except DockerCommandError as error:
-            if not endpoints: raise
-            errors = compile_errors(error.output)
-            names = ", ".join(f"{item.get('class_name', '?')}.{item.get('name', '?')}" for item in endpoints)
-            detail = "\n".join(f"• {item}" for item in errors) or f"• {diagnostic(error.output, '')[-300:]}"
-            _write_project(build_root, build_project(source, with_endpoints=False))
-            _run(build_command, timeout=settings.DEPLOY_BUILD_TIMEOUT, stage="build.compiler")
-            warning = (f"Los endpoints de la IA no compilaron; se desplegó solo el CRUD. Omitidos: {names}.\n{detail}")[:1500]
-            update(warning_summary=warning)
-            announcement = f"⚠ El despliegue usó solo el CRUD porque los endpoints aprobados no compilaron.\nOmitidos: {names}.\nErrores del compilador:\n{detail}\nPídanme que los corrija en este chat y vuelvan a desplegar."
+        if outcome["mode"] != "full":
+            warning, announcement = _repair_messages(outcome)
+        if warning: update(warning_summary=warning)
+        dropped = set(outcome["dropped"])  # the Postman collection lists only what the deployed API really has
+        update(deployed_endpoints=[{"class_name": spec.get("class_name"), "name": spec.get("name")} for spec in source.get("endpoints") or []
+                                   if isinstance(spec, dict) and (spec.get("class_name"), spec.get("name")) not in dropped
+                                   and not any(line.startswith(f"{spec.get('class_name')}.{spec.get('name')}:") for line in skipped)])
         _run(["docker", "volume", "create", f"uml-generated-data-{slug}"], timeout=30, stage="database.volume")
         deployment_record = type("DeploymentRecord", (), deployment)()
         database_username, database_password = database_identity(deployment_record)
