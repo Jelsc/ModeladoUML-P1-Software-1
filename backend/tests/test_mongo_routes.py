@@ -166,6 +166,17 @@ def test_mongo_permissions_preserve_owner_editor_and_viewer_semantics():
     assert error.value.status_code == 403
 
 
+def test_notification_inbox_store_orders_stably_and_limits_user_rows():
+    store = MongoStore("unused", "unused", client=MemoryClient())
+    store.notifications.documents.extend([
+        {"id": "a", "user_id": 7, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": "c", "user_id": 7, "created_at": "2026-01-02T00:00:00Z"},
+        {"id": "b", "user_id": 7, "created_at": "2026-01-02T00:00:00Z"},
+        {"id": "z", "user_id": 8, "created_at": "2027-01-01T00:00:00Z"},
+    ])
+    assert [item["id"] for item in store.notifications_for_user(7, 2)] == ["c", "b"]
+
+
 def test_chat_reply_must_be_from_same_diagram_and_channel(monkeypatch):
     diagram = {"id": "e1c41ab3-18ac-4a47-89d8-c4ec003b6ba8", "owner_id": 7,
                "title": "Board", "members": [], "classes": [], "relations": []}

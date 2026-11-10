@@ -37,7 +37,7 @@ void main() {
           },
         ],
       });
-      await tester.pumpWidget(
+    await tester.pumpWidget(
         MaterialApp(
           home: ReadOnlyDiagramWorkspace(
             diagram: diagram,
@@ -50,7 +50,9 @@ void main() {
             aiSettings: null,
           ),
         ),
-      );
+    );
+    await tester.tap(find.text('Lista').first);
+    await tester.pumpAndSettle();
 
       expect(find.text('Viaje'), findsNWidgets(2));
       expect(find.text('destino: string'), findsOneWidget);

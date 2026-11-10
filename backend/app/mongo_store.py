@@ -212,6 +212,10 @@ class MongoStore:
         return self.database["device_tokens"]
 
     @property
+    def notifications(self):
+        return self.database["notifications"]
+
+    @property
     def admin_state(self):
         return self.database[ADMIN_STATE]
 
@@ -235,6 +239,8 @@ class MongoStore:
         self.endpoint_specs.create_index([("diagram_id", ASCENDING), ("created_at", ASCENDING), ("name", ASCENDING)], name="ix_endpoint_specs_diagram_created")
         self.device_tokens.create_index([("token", ASCENDING)], unique=True, name="uq_device_token")
         self.device_tokens.create_index([("user_id", ASCENDING), ("platform", ASCENDING)], name="ix_device_token_user_platform")
+        self.notifications.create_index([("id", ASCENDING)], unique=True, name="uq_notification_id")
+        self.notifications.create_index([("user_id", ASCENDING), ("created_at", DESCENDING), ("id", DESCENDING)], name="ix_notifications_user_created")
         active_admins = [item["id"] for item in self.users.find({"role": "admin", "active": True}, {"id": True, "_id": False})]
         self.admin_state.update_one(
             {"_id": "active_admins"}, {"$setOnInsert": {"user_ids": active_admins}}, upsert=True,
@@ -310,6 +316,14 @@ class MongoStore:
 
     def delete_device_token(self, token: str) -> None:
         self.device_tokens.delete_one({"token": token})
+
+    def record_notification(self, document: dict) -> None:
+        self.notifications.insert_one(document)
+
+    def notifications_for_user(self, user_id: int, limit: int) -> list[dict]:
+        return list(self.notifications.find({"user_id": int(user_id)}, {"_id": False}).sort(
+            [("created_at", DESCENDING), ("id", DESCENDING)]
+        ).limit(limit))
 
     def close(self) -> None:
         self.client.close()

@@ -4,6 +4,7 @@ import '../data/push_notifications.dart';
 import '../data/team_api.dart';
 import '../models/team_models.dart';
 import 'diagram_screen.dart';
+import 'notification_inbox_screen.dart';
 
 class DiagramListScreen extends StatefulWidget {
   const DiagramListScreen({
@@ -80,6 +81,25 @@ class _DiagramListScreenState extends State<DiagramListScreen> {
     );
   }
 
+  void _openInbox() => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => NotificationInboxScreen(
+        api: widget.api,
+        onUnauthorized: widget.onUnauthorized,
+        onOpenDiagram: (item) {
+          Navigator.of(context).pop();
+          _open(
+            DiagramSummary(
+              id: item.diagramId,
+              title: item.diagramTitle,
+              isOwner: false,
+            ),
+          );
+        },
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -87,6 +107,11 @@ class _DiagramListScreenState extends State<DiagramListScreen> {
       appBar: AppBar(
         title: const Text('Equipo'),
         actions: [
+          IconButton(
+            tooltip: 'Notificaciones',
+            onPressed: _openInbox,
+            icon: const Icon(Icons.notifications_outlined),
+          ),
           IconButton(
             tooltip: 'Actualizar diagramas',
             onPressed: () => _load(refresh: true),

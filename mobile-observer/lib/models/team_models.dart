@@ -179,6 +179,39 @@ class DiagramData {
   );
 }
 
+class InboxNotification {
+  const InboxNotification({
+    required this.id,
+    required this.event,
+    required this.diagramId,
+    required this.diagramTitle,
+    required this.title,
+    required this.body,
+    required this.createdAt,
+  });
+  final String id, event, diagramId, diagramTitle, title, body;
+  final DateTime? createdAt;
+
+  factory InboxNotification.fromJson(Map<String, dynamic> json) =>
+      InboxNotification(
+        id: _string(json['id']),
+        event: _string(json['event']),
+        diagramId: _string(json['diagram_id']),
+        diagramTitle: _string(
+          json['diagram_title'],
+          fallback: 'Diagrama sin título',
+        ),
+        title: _string(json['title'], fallback: 'Actualización del equipo'),
+        body: _string(
+          json['body'],
+          fallback: 'Hay nueva actividad en un diagrama.',
+        ),
+        createdAt: json['created_at'] == null
+            ? null
+            : _date(json['created_at']),
+      );
+}
+
 class DiagramMember {
   const DiagramMember({
     required this.id,

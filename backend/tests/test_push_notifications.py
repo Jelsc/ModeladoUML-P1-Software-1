@@ -18,6 +18,10 @@ class FakeStore:
         self.tokens = [{"token": f"private-{index}", "user_id": 2, "platform": "android", "active": True}
                        for index in range(count)]
         self.deleted = []
+        self.notifications = []
+
+    def record_notification(self, document):
+        self.notifications.append(document)
 
     def diagram_by_id(self, _):
         return self.diagram
@@ -55,6 +59,8 @@ def test_recipient_filter_payload_and_privacy():
     assert title == "Actualización del equipo"
     assert body == "Hay nueva actividad en un diagrama."
     assert "private chat" not in str((data, title, body))
+    assert {item["user_id"] for item in store.notifications} == {2}
+    assert all(item["body"] == "Hay nueva actividad en un diagrama." for item in store.notifications)
 
 
 def test_event_actor_is_excluded_from_push_recipients():
@@ -84,12 +90,11 @@ def test_batches_at_fcm_limit_and_cleans_invalid_tokens():
     assert store.deleted == [batches[0][0], batches[1][0]]
 
 
-def test_disabled_sender_is_graceful_and_does_not_read_store():
-    class NoStore:
-        def diagram_by_id(self, _):
-            raise AssertionError("disabled push must not query storage")
-
-    asyncio.run(PushNotifications(credentials_path="").publish(NoStore(), "diagram-1", {"event": "class.updated"}))
+def test_disabled_firebase_still_persists_inbox_item():
+    store = FakeStore()
+    asyncio.run(PushNotifications(credentials_path="").publish(store, "diagram-1", {"event": "class.updated", "actor_user_id": 1}))
+    assert {item["user_id"] for item in store.notifications} == {2}
+    assert store.notifications[0]["event"] == "class.updated"
 
 
 def test_mongo_startup_binds_exact_store_and_shutdown_unbinds(monkeypatch):
@@ -200,6 +205,29 @@ def test_device_token_http_routes_require_authentication_and_use_current_user():
         assert store.registrations[payload["token"]]["user_id"] == 22
         assert client.request("DELETE", "/devices/fcm-token", json=payload).status_code == 204
         assert payload["token"] not in store.registrations
+    finally:
+        app.dependency_overrides.clear()
+        client.close()
+
+
+def test_notification_inbox_requires_auth_and_returns_contract_in_store_order():
+    from fastapi.testclient import TestClient
+
+    class InboxStore:
+        def notifications_for_user(self, user_id, limit):
+            assert user_id == 42 and limit == 2
+            return [{"id": "n2", "event": "class.updated", "diagram_id": "d-1", "diagram_title": "Modelo", "title": "Actualización del equipo", "body": "Hay nueva actividad en un diagrama.", "created_at": "2026-11-08T10:00:00Z"}]
+
+    app = _main.app
+    app.dependency_overrides[get_mongo_store] = InboxStore
+    client = TestClient(app)
+    try:
+        assert client.get("/notifications/inbox").status_code == 403
+        app.dependency_overrides[current_user] = lambda: {"id": 42}
+        response = client.get("/notifications/inbox?limit=2")
+        assert response.status_code == 200
+        assert response.json()[0] == {"id": "n2", "event": "class.updated", "diagram_id": "d-1", "diagram_title": "Modelo", "title": "Actualización del equipo", "body": "Hay nueva actividad en un diagrama.", "created_at": "2026-11-08T10:00:00Z"}
+        assert client.get("/notifications/inbox?limit=101").status_code == 422
     finally:
         app.dependency_overrides.clear()
         client.close()

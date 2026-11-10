@@ -83,4 +83,17 @@ void main() {
       expect(settings.canEdit, isFalse);
     },
   );
+  test('parses persisted notification contract and timestamp', () {
+    final item = InboxNotification.fromJson({
+      'id': 'n-1',
+      'event': 'class.updated',
+      'diagram_id': 'd-1',
+      'diagram_title': 'Modelo',
+      'title': 'Actualización del equipo',
+      'body': 'Hay nueva actividad en un diagrama.',
+      'created_at': '2026-11-08T10:00:00+00:00',
+    });
+    expect(item.diagramId, 'd-1');
+    expect(item.createdAt, DateTime.parse('2026-11-08T10:00:00+00:00'));
+  });
 }
