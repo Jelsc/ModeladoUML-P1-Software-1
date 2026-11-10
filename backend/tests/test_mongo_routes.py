@@ -45,6 +45,8 @@ class MemoryCollection:
         document = self.find_one(query)
         if document is None: return SimpleNamespace(matched_count=0)
         document.update(update.get("$set", {}))
+        for key, value in update.get("$push", {}).items():
+            document.setdefault(key, []).extend(value["$each"])
         return SimpleNamespace(matched_count=1, modified_count=1)
 
     def delete_one(self, query):
@@ -78,6 +80,8 @@ class MemoryCollection:
         document = self.find_one(query)
         if document is None: return SimpleNamespace(matched_count=0)
         document.update(update.get("$set", {}))
+        for key, value in update.get("$push", {}).items():
+            document.setdefault(key, []).extend(value["$each"])
         return SimpleNamespace(matched_count=1, modified_count=1)
 
     def delete_one(self, query):
@@ -418,3 +422,50 @@ def test_mongo_assistant_proposes_specs_and_includes_them_in_development_context
     context = brain.build_context(store, diagram, trigger, user)
     assert context["endpoints_ia"] == [{"clase": "Customer", "nombre": "findByEmail", "ruta": "GET /api/customers/por-email",
                                         "tipo": "find_by_field", "estado": "pendiente de aprobación"}]
+
+
+def test_photo_proposal_appends_only_selected_elements_and_maps_relations(monkeypatch):
+    diagram_id = "e1c41ab3-18ac-4a47-89d8-c4ec003b6ba8"
+    original = {"id": diagram_id, "title": "Board", "owner_id": 7, "updated_at": "before",
+                "classes": [{"id": "old", "name": "Existing", "x": 80, "y": 80, "attributes": [], "methods": []}], "relations": []}
+    store = MongoStore("unused", "unused", client=MemoryClient())
+    store.diagrams.documents.append(original)
+    user = {"id": 7, "name": "Owner"}
+    monkeypatch.setattr(mongo_routes, "_editable", lambda *_: original)
+    async def event(*_args, **_kwargs): pass
+    monkeypatch.setattr(mongo_routes, "_event", event)
+    proposal = mongo_routes.vision.VisionProposal.model_validate({"project_name": "ignored", "classes": [
+        {"id": "a", "name": "Added", "selected": True, "attributes": [{"name": "field", "type": "long", "selected": True}],
+         "methods": [{"name": "run", "return_type": "boolean", "selected": True}]},
+        {"id": "b", "name": "Related", "selected": True},
+        {"id": "c", "name": "Skipped", "selected": False}], "relations": [
+        {"id": "r", "source_id": "a", "target_id": "b", "type": "association", "selected": True}]})
+    result = asyncio.run(mongo_routes.mongo_vision_apply_to_diagram(diagram_id, proposal, store, user))
+    assert [item["name"] for item in result["diagram"]["classes"]] == ["Existing", "Added", "Related"]
+    assert result["diagram"]["classes"][1]["attributes"][0]["name"] == "field"
+    assert result["diagram"]["classes"][1]["methods"][0]["name"] == "run"
+    relation = result["diagram"]["relations"][0]
+    assert relation["source_id"] == result["diagram"]["classes"][1]["id"]
+    assert relation["target_id"] == result["diagram"]["classes"][2]["id"]
+    assert relation["type"] == "association"
+    assert original["title"] == "Board" and original["classes"][0]["id"] == "old"
+    assert store.activity.documents[0]["action"] == "photo_import.applied"
+
+
+def test_photo_proposal_rejects_existing_class_name_and_permissions(monkeypatch):
+    diagram_id = "e1c41ab3-18ac-4a47-89d8-c4ec003b6ba8"
+    original = {"id": diagram_id, "title": "Board", "owner_id": 7, "updated_at": "before",
+                "classes": [{"id": "old", "name": "Existing", "x": 80, "y": 80}], "relations": []}
+    store = MongoStore("unused", "unused", client=MemoryClient())
+    store.diagrams.documents.append(original)
+    user = {"id": 7, "name": "Owner"}
+    proposal = mongo_routes.vision.VisionProposal.model_validate({"project_name": "x", "classes": [{"id": "a", "name": "existing"}]})
+    monkeypatch.setattr(mongo_routes, "_editable", lambda *_: original)
+    with pytest.raises(mongo_routes.HTTPException) as duplicate:
+        asyncio.run(mongo_routes.mongo_vision_apply_to_diagram(diagram_id, proposal, store, user))
+    assert duplicate.value.status_code == 409 and "Ya existe" in duplicate.value.detail
+    def denied(*_): raise mongo_routes.HTTPException(403, "Sin permiso")
+    monkeypatch.setattr(mongo_routes, "_editable", denied)
+    with pytest.raises(mongo_routes.HTTPException) as permission:
+        asyncio.run(mongo_routes.mongo_vision_apply_to_diagram(diagram_id, proposal, store, user))
+    assert permission.value.status_code == 403

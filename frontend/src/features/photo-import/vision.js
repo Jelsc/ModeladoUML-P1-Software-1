@@ -16,6 +16,7 @@ export function detectFromPhoto(file) {
   return withTimeout(request("/vision/detect", { method: "POST", body }), DETECT_TIMEOUT);
 }
 
-export function applyPhotoProposal(proposal) {
-  return request("/vision/apply", { method: "POST", body: JSON.stringify(proposal) });
+export function applyPhotoProposal(proposal, diagramId = null) {
+  const path = diagramId ? `/diagrams/${encodeURIComponent(diagramId)}/vision/apply` : "/vision/apply";
+  return request(path, { method: "POST", body: JSON.stringify(proposal) });
 }

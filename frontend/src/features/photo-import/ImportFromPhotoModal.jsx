@@ -7,7 +7,7 @@ function selectedCount(proposal) {
   return proposal.classes.filter((item) => item.selected).length;
 }
 
-export function ImportFromPhotoModal({ onClose, onApplied }) {
+export function ImportFromPhotoModal({ onClose, onApplied, diagramId = null }) {
   const [state, setState] = useState(PHOTO_IMPORT_STATES.PICK);
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
@@ -57,23 +57,23 @@ export function ImportFromPhotoModal({ onClose, onApplied }) {
   async function apply() {
     if (!proposal || !selectedCount(proposal)) return;
     setError(""); setState(PHOTO_IMPORT_STATES.APPLYING);
-    try { const result = await applyPhotoProposal(proposal); onApplied(result.diagram); }
+    try { const result = await applyPhotoProposal(proposal, diagramId); onApplied(result.diagram, result.warnings || []); }
     catch (cause) { setError(cause.message); setState(PHOTO_IMPORT_STATES.REVIEW); }
   }
   return <div className="modal-backdrop photo-import-backdrop" onMouseDown={(event) => event.target === event.currentTarget && state !== PHOTO_IMPORT_STATES.APPLYING && onClose()}>
     <section ref={dialogRef} className="photo-import-modal" role="dialog" aria-modal="true" aria-labelledby="photo-import-title">
-      <div className="modal-heading"><div><p className="eyebrow">IMPORTACIÓN CONTROLADA</p><h2 id="photo-import-title">Generar desde foto</h2><p className="muted">La imagen se analiza sin crear nada hasta que confirmes la propuesta.</p></div><button type="button" className="ghost" onClick={onClose} disabled={state === PHOTO_IMPORT_STATES.APPLYING} aria-label="Cerrar importación">×</button></div>
+      <div className="modal-heading"><div><p className="eyebrow">IMPORTACIÓN CONTROLADA</p><h2 id="photo-import-title">Generar desde foto</h2><p className="muted">{diagramId ? "Revisá la propuesta; los elementos seleccionados se agregarán a este diagrama." : "La imagen se analiza sin crear nada hasta que confirmes la propuesta."}</p></div><button type="button" className="ghost" onClick={onClose} disabled={state === PHOTO_IMPORT_STATES.APPLYING} aria-label="Cerrar importación">×</button></div>
       {state === PHOTO_IMPORT_STATES.PICK || state === "ANALYZING" ? <div className="photo-import-pick">
         <label className="photo-dropzone"> <span>{state === "ANALYZING" ? "Analizando diagrama UML..." : "Seleccioná una foto del diagrama"}</span><input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" onChange={(event) => choose(event.target.files?.[0])} disabled={state === "ANALYZING"} /></label>
         {previewUrl && <img className="photo-preview" src={previewUrl} alt="Vista previa del diagrama seleccionado" />}
         {state === "ANALYZING" && <p className="notice" aria-live="polite">La imagen sigue visible mientras se analiza.</p>}
         <div className="form-actions"><button type="button" onClick={analyze} disabled={!file || state === "ANALYZING"}>{state === "ANALYZING" ? "Analizando..." : "Analizar foto"}</button><button type="button" className="ghost" onClick={onClose} disabled={state === "ANALYZING"}>Cancelar</button></div>
       </div> : <div className="photo-import-review">
-        <label>Nombre del proyecto<input value={proposal.project_name} onChange={(event) => setProposal({ ...proposal, project_name: event.target.value })} maxLength={200} /></label>
+        {!diagramId && <label>Nombre del proyecto<input value={proposal.project_name} onChange={(event) => setProposal({ ...proposal, project_name: event.target.value })} maxLength={200} /></label>}
         <div className="review-summary"><b>{selectedCount(proposal)} clases seleccionadas</b><span>{proposal.relations.filter((item) => item.selected).length} relaciones</span></div>
         <div className="proposal-list">{proposal.classes.map((item) => <fieldset key={item.id} className={!item.selected ? "proposal-item is-disabled" : "proposal-item"}><label className="checkbox"><input type="checkbox" checked={item.selected} onChange={(event) => setClassSelected(item.id, event.target.checked)} /> <strong>{item.name}</strong></label><div className="proposal-children">{item.attributes.map((child) => <label className="checkbox" key={child.id}><input type="checkbox" checked={child.selected} disabled={!item.selected} onChange={(event) => setChildSelected(item.id, "attributes", child.id, event.target.checked)} /> atributo: {child.name}: {child.type}</label>)}{item.methods.map((child) => <label className="checkbox" key={child.id}><input type="checkbox" checked={child.selected} disabled={!item.selected} onChange={(event) => setChildSelected(item.id, "methods", child.id, event.target.checked)} /> método: {child.name}(): {child.return_type}</label>)}</div></fieldset>)}{proposal.relations.map((item) => { const source = proposal.classes.find((x) => x.id === item.source_id); const target = proposal.classes.find((x) => x.id === item.target_id); const endpointsSelected = source?.selected && target?.selected; return <label className="checkbox proposal-relation" key={item.id}><input type="checkbox" checked={item.selected && endpointsSelected} disabled={!endpointsSelected} onChange={(event) => setRelationSelected(item.id, event.target.checked)} /> relación: {source?.name || item.source_id} · {item.type} · {target?.name || item.target_id} · multiplicidades: {item.source_multiplicity || "-"} / {item.target_multiplicity || "-"}{item.label ? ` · ${item.label}` : ""}</label>; })}</div>
         {proposal.warnings?.length > 0 && <div className="xmi-warnings"><strong>Advertencias de análisis</strong><ul>{proposal.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
-        {error && <p className="error" role="alert">{error}</p>}<p className="muted">Revisá cada elemento. Solo se aplicará lo seleccionado.</p><div className="form-actions"><button type="button" onClick={apply} disabled={!selectedCount(proposal)}>Crear diagrama revisado</button><button type="button" className="ghost" onClick={onClose}>Cancelar</button></div>
+        {error && <p className="error" role="alert">{error}</p>}<p className="muted">Revisá cada elemento. Solo se aplicará lo seleccionado.</p><div className="form-actions"><button type="button" onClick={apply} disabled={!selectedCount(proposal)}>{diagramId ? "Agregar al diagrama actual" : "Crear diagrama revisado"}</button><button type="button" className="ghost" onClick={onClose}>Cancelar</button></div>
       </div>}
       {error && state !== PHOTO_IMPORT_STATES.REVIEW && <p className="error" role="alert">{error}</p>}
     </section>

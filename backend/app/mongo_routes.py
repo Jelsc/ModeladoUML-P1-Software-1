@@ -1126,6 +1126,72 @@ def mongo_vision_apply(proposal: vision.VisionProposal, store: MongoStore = Depe
     return {"diagram": created, "warnings": normalized.warnings}
 
 
+@router.post("/diagrams/{diagram_id}/vision/apply")
+async def mongo_vision_apply_to_diagram(diagram_id: uuid.UUID, proposal: vision.VisionProposal, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    diagram = _editable(store, user, diagram_id)
+    normalized = vision.normalize_proposal(proposal)
+    selected_classes = [item for item in normalized.classes if item.selected]
+    names = [item.name.strip().casefold() for item in selected_classes]
+    if not selected_classes:
+        raise HTTPException(422, "Seleccione al menos una clase.")
+    if len(names) != len(set(names)):
+        raise HTTPException(422, "Las clases seleccionadas deben tener nombres únicos.")
+    existing_names = {item["name"].strip().casefold() for item in diagram.get("classes", [])}
+    duplicates = sorted({item.name.strip() for item in selected_classes if item.name.strip().casefold() in existing_names})
+    if duplicates:
+        raise HTTPException(409, f"Ya existe una clase con este nombre en el diagrama: {', '.join(duplicates)}. Desmarcala o revisá la propuesta antes de continuar.")
+    selected_relation_count = sum(item.selected for item in normalized.relations)
+    known_ids = {item.id for item in selected_classes}
+    for relation in normalized.relations:
+        if relation.selected and (relation.type not in vision._RELATION_TYPES or relation.source_id not in known_ids or relation.target_id not in known_ids):
+            raise HTTPException(422, "Una relación seleccionada apunta a una clase no seleccionada o inexistente.")
+    if sum(item.selected for item in normalized.relations) != selected_relation_count:
+        raise HTTPException(422, "Una relación seleccionada apunta a una clase no seleccionada o inexistente.")
+
+    remap = {item.id: stable_uuid() for item in selected_classes}
+    old_classes = diagram.get("classes", [])
+    max_x = max((int(item.get("x", 0)) for item in old_classes), default=0)
+    max_y = max((int(item.get("y", 0)) for item in old_classes), default=0)
+    classes = []
+    row_y = max_y + 80
+    for index, item in enumerate(selected_classes):
+        row = index // 4
+        if index % 4 == 0 and row:
+            previous_row = selected_classes[(row - 1) * 4:row * 4]
+            row_y += max(80 + 26 * (len(entry.attributes) + len(entry.methods)) for entry in previous_row) + 80
+        classes.append({"id": remap[item.id], "name": item.name.strip(), "x": max_x + 280 + (index % 4) * 280,
+                        "y": row_y, "is_association": False,
+                        "attributes": [{"id": stable_uuid(), "name": attr.name.strip(), "type": attr.type.strip() or "string"}
+                                       for attr in item.attributes if attr.selected],
+                        "methods": [{"id": stable_uuid(), "name": method.name.strip(), "return_type": method.return_type.strip() or "void"}
+                                    for method in item.methods if method.selected]})
+    relations = [{"id": stable_uuid(), "source_id": remap[item.source_id], "target_id": remap[item.target_id],
+                  "source_endpoint": None, "target_endpoint": None, "source_endpoint_type": "class", "target_endpoint_type": "class",
+                  "type": item.type, "label": item.label.strip() if item.label else None,
+                  "source_multiplicity": item.source_multiplicity, "target_multiplicity": item.target_multiplicity,
+                  "association_class_id": None} for item in normalized.relations if item.selected]
+    expected_updated_at = diagram.get("updated_at")
+    update = {"$set": {"updated_at": utc_now()}}
+    if classes:
+        update["$push"] = {"classes": {"$each": classes}}
+    if relations:
+        update.setdefault("$push", {})["relations"] = {"$each": relations}
+    result = store.diagrams.update_one({"id": diagram["id"], "updated_at": expected_updated_at}, update)
+    if not result.modified_count:
+        raise HTTPException(409, "El diagrama cambió mientras se aplicaba la propuesta. Actualizalo y volvé a intentarlo.")
+    store.record_activity(diagram["id"], user, "photo_import.applied", "diagram", diagram["id"],
+                          f"{user['name']} agregó {len(classes)} clases y {len(relations)} relaciones desde una foto")
+    updated = store.diagram_by_id(diagram["id"])
+    for item in classes:
+        await _event(diagram["id"], "class.created", **{"class": _class_json(item), "source": "vision_import"})
+    relation_payloads = {item["id"]: item for item in _relations_json(updated)}
+    for item in relations:
+        await _event(diagram["id"], "relation.created", relation=relation_payloads[item["id"]], source="vision_import")
+    await _event(diagram["id"], "diagram.updated", source="vision_import", added_class_ids=[item["id"] for item in classes],
+                 added_relation_ids=[item["id"] for item in relations])
+    return {"diagram": _diagram_json(updated), "warnings": normalized.warnings}
+
+
 @router.post("/vision/{path:path}")
 def mongo_unknown_vision_path(path: str, request: Request):
     raise HTTPException(404, "Endpoint de visión no encontrado")

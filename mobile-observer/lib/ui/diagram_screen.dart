@@ -23,7 +23,7 @@ class ObserverDiagramScreen extends StatefulWidget {
 }
 
 class _ObserverDiagramScreenState extends State<ObserverDiagramScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   DiagramData? _diagram;
   List<DiagramMember> _members = const [];
   List<ChatMessage> _messages = const [];
@@ -39,16 +39,31 @@ class _ObserverDiagramScreenState extends State<ObserverDiagramScreen>
   RealtimeStatus _realtimeStatus = RealtimeStatus.disconnected;
   TeamRealtime? _realtime;
   Timer? _readRefreshTimer;
+  late final TabController _tabController;
+  bool _diagramView = true;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    _tabController.addListener(_onTabChanged);
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadAll());
   }
 
+  void _onTabChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _onDiagramViewChanged(bool diagramView) {
+    if (_diagramView == diagramView) return;
+    setState(() => _diagramView = diagramView);
+  }
+
   @override
   void dispose() {
+    _tabController.removeListener(_onTabChanged);
+    _tabController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _readRefreshTimer?.cancel();
     unawaited(_realtime?.stop());
@@ -297,81 +312,91 @@ class _ObserverDiagramScreenState extends State<ObserverDiagramScreen>
   @override
   Widget build(BuildContext context) {
     final diagram = _diagram;
-    return DefaultTabController(
-      length: 4,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            diagram?.title ?? widget.summary.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          actions: [
-            IconButton(
-              tooltip: 'Actualizar',
-              onPressed: () => _loadAll(refresh: true),
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
-          bottom: const TabBar(
-            isScrollable: true,
-            tabs: [
-              Tab(text: 'Modelo'),
-              Tab(text: 'Conversación'),
-              Tab(text: 'Bitácora'),
-              Tab(text: 'Resumen'),
-            ],
-          ),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          diagram?.title ?? widget.summary.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-        body: Column(
-          children: [
-            _RealtimeStrip(status: _realtimeStatus),
-            if (_aiThinking) _ThinkingStrip(requester: _aiRequester),
-            if (_error != null && diagram != null)
-              MaterialBanner(
-                content: Text(_error!),
-                actions: [
-                  TextButton(
-                    onPressed: () => _loadAll(refresh: true),
-                    child: const Text('Reintentar'),
+        actions: [
+          IconButton(
+            tooltip: 'Actualizar',
+            onPressed: () => _loadAll(refresh: true),
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          tabs: [
+            Tab(text: 'Modelo'),
+            Tab(text: 'Conversación'),
+            Tab(text: 'Bitácora'),
+            Tab(text: 'Resumen'),
+          ],
+        ),
+      ),
+      body: Column(
+        children: [
+          _RealtimeStrip(status: _realtimeStatus),
+          if (_aiThinking) _ThinkingStrip(requester: _aiRequester),
+          if (_error != null && diagram != null)
+            MaterialBanner(
+              content: Text(_error!),
+              actions: [
+                TextButton(
+                  onPressed: () => _loadAll(refresh: true),
+                  child: const Text('Reintentar'),
+                ),
+              ],
+            ),
+          Expanded(
+            child: _loading && diagram == null
+                ? const Center(child: CircularProgressIndicator())
+                : diagram == null
+                ? _LoadError(
+                    message: _error ?? 'No se pudo cargar el diagrama.',
+                    onRetry: () => _loadAll(refresh: true),
+                  )
+                : TabBarView(
+                    controller: _tabController,
+                    physics: _tabController.index == 0 && _diagramView
+                        ? const NeverScrollableScrollPhysics()
+                        : null,
+                    children: [
+                      DiagramModelTab(
+                        diagram: diagram,
+                        onDiagramViewChanged: _onDiagramViewChanged,
+                      ),
+                      ChatReadOnlyTab(
+                        messages: _messages,
+                        channel: _channel,
+                        onChannelChanged: _loadChannel,
+                      ),
+                      ActivityReadOnlyTab(items: _activity),
+                      SummaryReadOnlyTab(
+                        digest: _digest,
+                        members: _members,
+                        aiSettings: _aiSettings,
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            Expanded(
-              child: _loading && diagram == null
-                  ? const Center(child: CircularProgressIndicator())
-                  : diagram == null
-                  ? _LoadError(
-                      message: _error ?? 'No se pudo cargar el diagrama.',
-                      onRetry: () => _loadAll(refresh: true),
-                    )
-                  : TabBarView(
-                      children: [
-                        DiagramModelTab(diagram: diagram),
-                        ChatReadOnlyTab(
-                          messages: _messages,
-                          channel: _channel,
-                          onChannelChanged: _loadChannel,
-                        ),
-                        ActivityReadOnlyTab(items: _activity),
-                        SummaryReadOnlyTab(
-                          digest: _digest,
-                          members: _members,
-                          aiSettings: _aiSettings,
-                        ),
-                      ],
-                    ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
 class DiagramModelTab extends StatefulWidget {
-  const DiagramModelTab({super.key, required this.diagram});
+  const DiagramModelTab({
+    super.key,
+    required this.diagram,
+    this.onDiagramViewChanged,
+  });
   final DiagramData diagram;
+  final ValueChanged<bool>? onDiagramViewChanged;
 
   @override
   State<DiagramModelTab> createState() => _DiagramModelTabState();
@@ -410,8 +435,11 @@ class _DiagramModelTabState extends State<DiagramModelTab> {
                   ),
                 ],
                 selected: {_diagramView},
-                onSelectionChanged: (value) =>
-                    setState(() => _diagramView = value.first),
+                onSelectionChanged: (value) {
+                  final diagramView = value.first;
+                  setState(() => _diagramView = diagramView);
+                  widget.onDiagramViewChanged?.call(diagramView);
+                },
               ),
               const Spacer(),
               if (_diagramView && diagram.classes.isNotEmpty)

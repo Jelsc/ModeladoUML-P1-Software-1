@@ -5,6 +5,8 @@ const modal = readFileSync(new URL("../src/features/photo-import/ImportFromPhoto
 const api = readFileSync(new URL("../src/features/photo-import/vision.js", import.meta.url), "utf8");
 const dashboard = readFileSync(new URL("../src/pages/DashboardPage.jsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+const chat = readFileSync(new URL("../src/features/chat/ChatPanel.jsx", import.meta.url), "utf8");
+const board = readFileSync(new URL("../src/pages/board-canvas.jsx", import.meta.url), "utf8");
 
 assert.match(dashboard, /Generar desde foto/);
 assert.match(modal, /PHOTO_IMPORT_STATES/);
@@ -17,9 +19,18 @@ assert.match(modal, /URL\.createObjectURL/);
 assert.match(modal, /URL\.revokeObjectURL/);
 assert.match(modal, /type="checkbox"/);
 assert.match(modal, /Crear diagrama revisado/);
+assert.match(modal, /diagramId \? "Revisá la propuesta/);
+assert.match(modal, /!diagramId && <label>Nombre del proyecto/);
+assert.match(modal, /Agregar al diagrama actual/);
 assert.match(api, /FormData/);
 assert.match(api, /\/vision\/detect/);
 assert.match(api, /\/vision\/apply/);
 assert.match(api, /120000/);
+assert.match(api, /diagrams\/\$\{encodeURIComponent\(diagramId\)\}\/vision\/apply/);
+assert.match(chat, /current\.id === "diseno" && canImportPhoto/);
+assert.match(board, /canImportPhoto=\{!readOnly\}/);
+assert.match(board, /<ImportFromPhotoModal diagramId=\{id\}/);
+assert.match(dashboard, /<ImportFromPhotoModal onClose=/);
+assert.doesNotMatch(dashboard, /diagramId=/);
 assert.match(styles, /\.photo-import-modal/);
 console.log("Photo import checks passed.");
