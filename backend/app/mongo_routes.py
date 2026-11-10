@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 import json
 from copy import deepcopy
@@ -14,10 +15,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
 from pymongo.errors import DuplicateKeyError
+from exporters.endpoint_tests import build_cases
 from exporters.endpoints import prepare_spec, relative_path, route_key
 from exporters.method_flow import build_flow
 from exporters.validator import entity_route_path
 
+from . import endpoint_runner as runner
 from . import main as legacy
 from .collaboration import collaboration
 from .mongo_store import (
@@ -291,7 +294,7 @@ def mongo_delete_user(user_id: int, store: MongoStore = Depends(get_mongo_store)
     for diagram in diagrams:
         did = diagram["id"]
         store.diagrams.delete_one({"id": did})
-        for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals):
+        for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals, store.test_runs):
             collection.delete_many({"diagram_id": did})
     store.diagrams.update_many({}, {"$pull": {"members": {"user_id": user_id}}})
     store.chat_messages.update_many({"author_user_id": user_id}, {"$set": {"author_user_id": None}})
@@ -328,7 +331,7 @@ def mongo_delete_diagram(diagram_id: uuid.UUID, store: MongoStore = Depends(get_
         from .deployment import cleanup
         cleanup(SimpleNamespace(**deployment))
     store.diagrams.delete_one({"id": document["id"]})
-    for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals):
+    for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals, store.test_runs):
         collection.delete_many({"diagram_id": document["id"]})
     return {"ok": True}
 
@@ -678,6 +681,90 @@ async def mongo_reject_proposal(proposal_id: uuid.UUID, store: MongoStore = Depe
     return _proposal_json(store, store.ai_proposals.find_one({"id": proposal["id"]}))
 
 
+_testing = set()  # diagrams with a test run in progress: one at a time, so nobody floods the deployed API
+
+
+class TestRunBody(BaseModel):
+    __test__ = False  # not a pytest class
+    include_mutating: bool = False
+    endpoint: dict | None = None  # {"class_name", "name"}: run only the cases of one endpoint
+
+
+def _test_target(store, diagram):
+    """(deployment, running). The API under test is always the diagram's own running deployment, taken from our records, never from the request."""
+    deployment = store.deployments.find_one({"diagram_id": diagram["id"]})
+    return deployment, bool(deployment and deployment.get("status") == "running" and deployment.get("container_name"))
+
+
+def _test_cases(deployment):
+    try: return build_cases(json.loads(deployment["project_json"]), deployment.get("deployed_endpoints")) if deployment else []
+    except (ValueError, KeyError, TypeError): return []
+
+
+def _run_json(store, run):
+    who = store.user_by_id(run["requested_by"]) if run.get("requested_by") is not None else None
+    return {"id": run["id"], "created_at": iso_utc(run["created_at"]), "requested_by": who["name"] if who else run.get("requester_name"), "include_mutating": run.get("include_mutating", False),
+            "summary": run["summary"], "results": run["results"]}
+
+
+def _latest_run(store, diagram_id):
+    return next(iter(store.test_runs.find({"diagram_id": diagram_id}).sort([("created_at", -1)]).limit(1)), None)
+
+
+@router.get("/diagrams/{diagram_id}/tests")
+def mongo_tests(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    """What can be tested in the deployed API (cases), whether it is running, and the result of the last run."""
+    diagram, _ = _find_diagram(store, user, diagram_id)
+    deployment, running = _test_target(store, diagram)
+    try: _editable(store, user, diagram_id); editor = True
+    except HTTPException: editor = False
+    latest = _latest_run(store, diagram["id"])
+    return {"deployment": {"status": deployment.get("status") if deployment else None, "url": deployment.get("url") if deployment else None, "running": running},
+            "cases": [{key: case[key] for key in ("id", "endpoint", "branch", "title", "method", "path", "mutating")} for case in _test_cases(deployment)],
+            "latest": _run_json(store, latest) if latest else None, "can_run": running, "can_run_mutating": running and editor}
+
+
+async def _post_test_summary(store, diagram_id, user, run):
+    """The assistant tells the Test chat how the run went (deterministic text built from the real results, no model involved)."""
+    summary, results = run["summary"], run["results"]
+    head = f"{user['name']} probó la API desplegada: {summary['passed']} de {summary['total']} pruebas pasaron" + (f", {summary['failed']} fallaron" if summary["failed"] else "") + (f", {summary['skipped']} se omitieron" if summary["skipped"] else "") + "."
+    lines = [head] + [f"✗ {r['endpoint']['class_name']}.{r['endpoint']['name']} · {r['title']}: {r['detail']}" for r in results if r["outcome"] == "failed"][:6]
+    lines += list(dict.fromkeys(f"⚠ {r['endpoint']['class_name']}.{r['endpoint']['name']}: {r['warning']}" for r in results if r.get("warning")))[:4]
+    if not summary["failed"] and summary["passed"]: lines.append("Todo lo probado respondió como se esperaba.")
+    if summary["skipped"]: lines.append("Las omitidas necesitan datos o la confirmación para pruebas que modifican datos (ver la lista de resultados).")
+    message = {"id": str(uuid.uuid4()), "diagram_id": diagram_id, "author_user_id": None, "author_kind": "ai", "content": "\n".join(lines)[:4000], "reply_to_id": None, "channel": "test", "created_at": utc_now()}
+    store.chat_messages.insert_one(message)
+    await _event(diagram_id, "chat.message", message=_chat_json(store, message))
+
+
+@router.post("/diagrams/{diagram_id}/tests/run")
+async def mongo_run_tests(diagram_id: uuid.UUID, body: TestRunBody, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    """Runs the test cases against the diagram's running deployment. Read-only cases need access to the diagram; cases that change data need edit rights and `include_mutating`."""
+    from .deployment import SAFE_NAME
+    diagram, _ = _find_diagram(store, user, diagram_id)
+    if body.include_mutating: _editable(store, user, diagram_id)
+    deployment, running = _test_target(store, diagram)
+    if not running: raise HTTPException(409, "No hay un despliegue en ejecución para probar. Despliegue primero.")
+    container = deployment["container_name"]
+    if not SAFE_NAME.fullmatch(container): raise HTTPException(409, "El despliegue tiene un nombre de contenedor inválido")
+    cases = _test_cases(deployment)
+    if body.endpoint: cases = [case for case in cases if case["endpoint"] == {"class_name": body.endpoint.get("class_name"), "name": body.endpoint.get("name")}]
+    if not cases: raise HTTPException(409, "Todavía no hay endpoints de la IA desplegados para probar")
+    did = diagram["id"]
+    if did in _testing: raise HTTPException(409, "Ya hay una prueba en curso en este diagrama")
+    _testing.add(did)
+    try: results = await asyncio.to_thread(runner.run_cases, cases, f"http://{container}:8080", body.include_mutating, runner.http_call)
+    finally: _testing.discard(did)
+    run = {"id": str(uuid.uuid4()), "diagram_id": did, "requested_by": user["id"], "requester_name": user["name"], "created_at": utc_now(), "include_mutating": body.include_mutating,
+           "deployment_slug": deployment.get("slug"), "summary": runner.summarize(results), "results": results}
+    store.test_runs.insert_one(run)
+    for old in list(store.test_runs.find({"diagram_id": did}).sort([("created_at", -1)]))[10:]: store.test_runs.delete_one({"id": old["id"]})  # keep the last 10
+    store.record_activity(did, user, "tests.run", "tests", run["id"], f"{user['name']} probó la API desplegada: {run['summary']['passed']} de {run['summary']['total']} pruebas pasaron")
+    await _event(did, "ai.testrun", run_id=run["id"], summary=run["summary"])
+    await _post_test_summary(store, did, user, run)
+    return _run_json(store, run)
+
+
 @router.get("/diagrams/{diagram_id}/endpoints")
 def mongo_list_endpoints(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
     diagram, _ = _find_diagram(store, user, diagram_id)
@@ -724,7 +811,11 @@ def _endpoint_flow(store, user, endpoint_id):
     for relation in diagram.get("relations", []):
         mine, other = (relation["source_id"], relation["target_id"]) if relation["source_id"] == cls["id"] else (relation["target_id"], relation["source_id"]) if relation["target_id"] == cls["id"] else (None, None)
         if mine and other in classes: related.append({"other": classes[other]["name"], "type": relation["type"], "multiplicity": f"{relation.get('source_multiplicity') or '—'} : {relation.get('target_multiplicity') or '—'}"})
-    return build_flow(dict(spec), cls["name"], [(a["name"], a.get("type", "string")) for a in cls.get("attributes", [])], siblings, related)
+    flow = build_flow(dict(spec), cls["name"], [(a["name"], a.get("type", "string")) for a in cls.get("attributes", [])], siblings, related)
+    latest = next(iter(store.test_runs.find({"diagram_id": diagram["id"]}).sort([("created_at", -1)]).limit(1)), None)
+    mine = {"class_name": cls["name"], "name": spec["name"]}
+    flow["last_test"] = {"run_id": latest["id"], "created_at": iso_utc(latest["created_at"]), "results": [r for r in latest.get("results", []) if r.get("endpoint") == mine]} if latest else None
+    return flow
 
 
 @router.get("/endpoints/{endpoint_id}/flow")

@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { accessLabel, clip, flowOutline, layoutFlow, relationLabel } from "./flow-model.js";
 import { kindLabel, statusLabel } from "./endpoint-model.js";
 import { useMethodFlow } from "./useMethodFlow.js";
+import { ResultList } from "./TestPanel.jsx";
+import { branchMarks, hasMutatingCases, outcomeIcon, outcomeLabel, statusOf } from "./testrun-model.js";
 
-export function FlowSvg({ flow }) {
+// `marks` ({branch label: passed|failed}) puts a ✓/✗ on the branches of the diagram that the last test run exercised.
+export function FlowSvg({ flow, marks = {} }) {
   const view = layoutFlow(flow);
   return <svg className="method-flow-svg" width={view.width} height={view.height} viewBox={`0 0 ${view.width} ${view.height}`} role="img" aria-label={`Diagrama de secuencia de ${flow.title}`}>
     <defs>
@@ -15,8 +18,10 @@ export function FlowSvg({ flow }) {
       <path className="flow-tab" d={`M${box.x} ${box.y} h${box.tag === "alt" ? 36 : 52} v16 l-8 8 h-${box.tag === "alt" ? 28 : 44} z`} />
       <text className="flow-tab-text" x={box.x + 6} y={box.y + 16}>{box.tag}</text>
       <text className="flow-condition" x={box.x + (box.tag === "alt" ? 46 : 62)} y={box.y + 17}>[{clip(box.label, 52)}]<title>{box.label}</title></text>
+      {marks[box.label] && <text className={`flow-mark ${marks[box.label]}`} x={box.x + box.w - 24} y={box.y + 18}>{outcomeIcon(marks[box.label])}<title>{`Última prueba: ${outcomeLabel(marks[box.label])}`}</title></text>}
     </g>)}
-    {view.dividers.map((divider, index) => <g key={`div-${index}`}><line className="flow-divider" x1={divider.x1} x2={divider.x2} y1={divider.y} y2={divider.y} /><text className="flow-condition" x={divider.x1 + 10} y={divider.y + 17}>[{clip(divider.label, 52)}]<title>{divider.label}</title></text></g>)}
+    {view.dividers.map((divider, index) => <g key={`div-${index}`}><line className="flow-divider" x1={divider.x1} x2={divider.x2} y1={divider.y} y2={divider.y} /><text className="flow-condition" x={divider.x1 + 10} y={divider.y + 17}>[{clip(divider.label, 52)}]<title>{divider.label}</title></text>
+      {marks[divider.label] && <text className={`flow-mark ${marks[divider.label]}`} x={divider.x2 - 24} y={divider.y + 18}>{outcomeIcon(marks[divider.label])}<title>{`Última prueba: ${outcomeLabel(marks[divider.label])}`}</title></text>}</g>)}
     {view.participants.map((p) => <g key={p.id} className={`flow-participant ${p.id}`}><rect x={p.x - 74} y="8" width="148" height="30" rx="6" /><text x={p.x} y="28" textAnchor="middle">{clip(p.label, 20)}<title>{p.label}</title></text></g>)}
     {view.arrows.map((arrow, index) => <g key={`a-${index}`} className="flow-arrow">
       <line className={arrow.dashed ? "flow-return" : "flow-call"} x1={arrow.x1} x2={arrow.x2 + (arrow.direction === "right" ? -2 : 2)} y1={arrow.y} y2={arrow.y} markerEnd="url(#flow-arrow)" />
@@ -34,9 +39,14 @@ function Section({ title, empty, children }) {
 }
 
 // Opened with a double click on an endpoint: the whole path of the method and everything it is connected to.
-export function MethodFlowModal({ endpoint, onClose }) {
-  const { flow, loading, error } = useMethodFlow(endpoint.id);
-  const [copied, setCopied] = useState(""), closeRef = useRef(null);
+export function MethodFlowModal({ endpoint, onClose, tests = null }) {
+  const { flow, loading, error } = useMethodFlow(endpoint.id, tests?.data?.latest?.id);
+  const [copied, setCopied] = useState(""), [mutating, setMutating] = useState(false), closeRef = useRef(null);
+  const results = flow?.last_test?.results || [], overall = statusOf(results);
+  const runHere = () => {
+    if (mutating && !window.confirm("Estas pruebas pueden MODIFICAR registros existentes del despliegue. ¿Continuar?")) return;
+    tests.onRun({ includeMutating: mutating, endpoint: { class_name: endpoint.class_name, name: endpoint.name } });
+  };
   useEffect(() => { closeRef.current?.focus(); }, []);
   useEffect(() => { const onKey = (event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }; addEventListener("keydown", onKey, true); return () => removeEventListener("keydown", onKey, true); }, [onClose]);
   const copy = async () => {
@@ -53,13 +63,26 @@ export function MethodFlowModal({ endpoint, onClose }) {
       {flow && <>
         {flow.description && <p className="method-flow-description">{flow.description}</p>}
         {flow.warnings.length > 0 && <ul className="method-flow-warnings" role="note">{flow.warnings.map((warning) => <li key={warning}>⚠ {warning}</li>)}</ul>}
-        <div className="method-flow-scroll" tabIndex={0} aria-label="Diagrama de secuencia (desplazable)"><FlowSvg flow={flow} /></div>
+        <div className="method-flow-scroll" tabIndex={0} aria-label="Diagrama de secuencia (desplazable)"><FlowSvg flow={flow} marks={branchMarks(flow, results)} /></div>
         <div className="method-flow-columns">
           <Section title="Depende de" empty="No llama a otros métodos: solo usa su repositorio.">{flow.calls.length > 0 && <ul>{flow.calls.map((call) => <li key={call.name}><b>{call.name}</b> <span className="muted">{call.kind === "crud" ? "CRUD generado" : "otro endpoint"} · {call.reason}</span></li>)}</ul>}</Section>
           <Section title="Lo usan" empty="Ningún otro método lo llama.">{flow.used_by.length > 0 && <ul>{flow.used_by.map((user) => <li key={user.name}><b>{user.name}</b> <span className="muted">{user.reason}</span></li>)}</ul>}</Section>
           <Section title="Datos que toca" empty="">{<ul>{flow.touches.map((touch) => <li key={touch.class}><b>{touch.class}</b> <span className="muted">{accessLabel(touch.access)} · {touch.detail}</span></li>)}{flow.related.map((relation) => <li key={relationLabel(relation)}><span className="muted">Relacionada: {relationLabel(relation)}</span></li>)}</ul>}</Section>
         </div>
         <Section title="Casos de prueba sugeridos (uno por rama)" empty=""><div className="method-flow-tests">{flow.tests.map((test) => <article key={test.title}><b>{test.title}</b>{test.given && <p><span>Dado</span> {test.given}</p>}<p><span>Cuando</span> <code>{test.request}</code></p><p><span>Entonces</span> {test.expect}</p></article>)}</div></Section>
+        <Section title="Pruebas ejecutadas contra la API desplegada" empty="">
+          <div className="method-flow-run">
+            {overall && <p className={`method-flow-run-badge ${overall}`}><span className={`board-test-icon ${overall}`}>{outcomeIcon(overall)}</span> {overall === "passed" ? "Pasó la última prueba" : overall === "failed" ? "Falló en la última prueba" : "Las pruebas se omitieron"}</p>}
+            {tests && <div className="board-tests-actions">
+              <button type="button" disabled={!tests.data?.can_run || tests.running || endpoint.status !== "approved"} onClick={runHere}>{tests.running ? "Probando…" : "Probar este endpoint"}</button>
+              {tests.data?.can_run_mutating && hasMutatingCases(tests.data, endpoint) && <label className="board-tests-mutating"><input type="checkbox" checked={mutating} disabled={tests.running} onChange={(event) => setMutating(event.target.checked)} /> Incluir pruebas que modifican datos</label>}
+              {endpoint.status !== "approved" && <small className="muted">Apruébelo y despliéguelo para poder probarlo.</small>}
+              {endpoint.status === "approved" && !tests.data?.can_run && <small className="muted">La API no está en ejecución: despliéguela primero.</small>}
+            </div>}
+            {tests?.error && <p className="error" role="alert">{tests.error}</p>}
+            {results.length ? <ResultList results={results} /> : <p className="muted">Todavía no se probó este endpoint.</p>}
+          </div>
+        </Section>
         <details className="method-flow-text"><summary>Ver texto (Mermaid y esquema)</summary><textarea readOnly rows={8} value={flow.mermaid} aria-label="Diagrama en formato Mermaid" /><pre>{flowOutline(flow)}</pre></details>
         <div className="form-actions"><button type="button" onClick={copy}>Copiar Mermaid</button><button type="button" className="ghost" onClick={onClose}>Cerrar</button></div>
         {copied && <p className="muted" role="status">{copied}</p>}

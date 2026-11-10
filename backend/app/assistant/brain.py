@@ -89,7 +89,10 @@ CHANNEL_FOCUS = {
     "test": (
         "Este es el chat TEST (solo consulta, no puedes editar el diagrama ni proponer endpoints): propone casos de prueba (felices, bordes y errores) para las clases, relaciones y endpoints de 'backend_generado' y 'endpoints_ia', "
         "y ayuda a razonar qué probar: un caso por cada rama del flujo de 'flujos_endpoints' (rama feliz, ramas de error, bordes) y revisa 'advertencias'. "
-        "Si piden entender el ciclo de vida de un método, explícalo con ese flujo (el equipo lo ve como diagrama con doble clic sobre el endpoint). Si piden cambios, indica que se piden en el chat Diseño o Desarrollo."
+        "Si piden entender el ciclo de vida de un método, explícalo con ese flujo (el equipo lo ve como diagrama con doble clic sobre el endpoint). Si piden cambios, indica que se piden en el chat Diseño o Desarrollo. "
+        "'despliegue' dice si la API está corriendo (estado 'running'): en ese caso el equipo puede pulsar el botón «Probar» de este chat para ejecutar las pruebas contra la API real; si no está desplegada, dilo y sugiere desplegar primero. "
+        "'ultima_prueba' trae los resultados REALES de la última ejecución (resumen, fallidos, advertencias, omitidos): explica la causa probable de cada fallo apoyándote en 'flujos_endpoints' y 'java_api', y qué probar después. "
+        "Tú no ejecutas las pruebas: las corre el botón «Probar». Nunca digas que algo pasó o falló si no está en 'ultima_prueba'."
     ),
 }
 
@@ -178,6 +181,16 @@ def build_context(db, diagram, trigger, requester):
                 from exporters.project_builder import java_api
                 context["java_api"] = java_api(_diagram_json(diagram))
             except Exception: logger.warning("java_api_unavailable")
+            deployment = db.deployments.find_one({"diagram_id": diagram["id"]})
+            context["despliegue"] = {"estado": (deployment or {}).get("status") or "sin desplegar", "url": (deployment or {}).get("url"),
+                                     "endpoints_desplegados": [f"{e.get('class_name')}.{e.get('name')}" for e in (deployment or {}).get("deployed_endpoints") or []]}
+            last = next(iter(db.test_runs.find({"diagram_id": diagram["id"]}).sort([("created_at", -1)]).limit(1)), None)
+            if last:  # the real results of the last run of the "Probar" button, so the AI reasons about what happened instead of guessing
+                results = last.get("results", [])
+                context["ultima_prueba"] = {"fecha": last["created_at"].isoformat() if hasattr(last["created_at"], "isoformat") else str(last["created_at"]), "resumen": last.get("summary"),
+                                            "fallidos": [{"endpoint": f"{r['endpoint']['class_name']}.{r['endpoint']['name']}", "caso": r["title"], "obtenido": r["detail"]} for r in results if r["outcome"] == "failed"][:10],
+                                            "advertencias": list(dict.fromkeys(f"{r['endpoint']['class_name']}.{r['endpoint']['name']}: {r['warning']}" for r in results if r.get("warning")))[:5],
+                                            "omitidos": sum(1 for r in results if r["outcome"] == "skipped")}
         return context
     classes = db.query(UmlClass).filter_by(diagram_id=diagram.id).order_by(UmlClass.name).all()
     relations = db.query(Relation).filter_by(diagram_id=diagram.id).all()

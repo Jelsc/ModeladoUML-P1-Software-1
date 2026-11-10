@@ -74,7 +74,7 @@ La suite corre en Python 3.12 dentro de Docker (el Python 3.14 de Windows no sir
 ```
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo:ro" uml-backend-test:py312 bash -c 'cd /repo && tar --exclude=node_modules --exclude=.git --exclude=mobile --exclude=.atl --exclude=dist -cf - . | tar -xf - -C /work && cd /work/backend && python -m pytest -q 2>&1 | tail -3'
 ```
-- [ ] Resultado esperado: **`25 failed, 360 passed`** (necesita `pymongo` y `firebase-admin` instalados; las 25 fallas son las 21 de siempre —tests viejos que leen el código fuente— más 4 de la migración a MongoDB y las notificaciones push del compañero, que no son de esta parte: 3 de `test_push_notifications` y 1 de `test_mongo_store` que no conoce la colección `notifications`).
+- [ ] Resultado esperado: **`25 failed, 379 passed`** (necesita `pymongo` y `firebase-admin` instalados; las 25 fallas son las 21 de siempre —tests viejos que leen el código fuente— más 4 de la migración a MongoDB y las notificaciones push del compañero, que no son de esta parte: 3 de `test_push_notifications` y 1 de `test_mongo_store` que no conoce la colección `notifications`).
 - [ ] Los 21 que fallan son **los mismos de antes de empezar** (no los causamos): 18 tests de contrato obsoletos que comparan texto exacto del frontend, 2 de XMI porque falta un archivo de ejemplo en el repo, y 1 de `class_patch_contract`. Si el número de fallos sube de 21, algo se rompió.
 - Archivos de pruebas nuevos: `test_chat_api.py`, `test_activity_log.py`, `test_ai_brain.py`, `test_digest.py`.
 
@@ -211,6 +211,26 @@ Al desplegar, un endpoint de la IA que no compila ya no tumba a los demás: el s
 | 2.74 | En el panel de despliegue, descargá la colección de Postman | Cada clase tiene una carpeta **«Endpoints de la IA»** con una petición por endpoint desplegado (con su URL de ejemplo, parámetros y pruebas) |
 | 2.75 | Importá la colección en Postman y ejecutá los endpoints de la IA | Las pruebas verifican 2xx y el tipo de respuesta (lista, número, true/false o registro). Los que usan `{id}` piden un id existente |
 | 2.76 | Un endpoint que se descartó por no compilar | **No** aparece en Postman (solo lo que realmente se desplegó) |
+
+### 2.g Chat Test: botón «Probar» sobre la API desplegada
+
+El chat Test ejecuta casos de prueba contra **la API desplegada** (no contra el diseño) y muestra el resultado real. Requiere un diagrama desplegado y en ejecución, con al menos un endpoint de la IA aprobado.
+
+| # | Qué hacés | Resultado esperado |
+|---|---|---|
+| 2.77 | Abrí el chat **Test** sin haber desplegado | El panel dice que todavía no hay despliegue y el botón **Probar** está deshabilitado |
+| 2.78 | Desplegá (con 1 o 2 endpoints aprobados) y volvé a Test; pulsá **Actualizar estado** | «La API está en ejecución. Hay N casos de prueba para M endpoint(s)» |
+| 2.79 | Pulsá **Probar** | Aparece «Probando…» y luego la lista: cada endpoint con ✓/✗/–, el estado HTTP, el tiempo y el motivo. Los de lectura (GET) pasan |
+| 2.80 | Mirá el chat | La IA publica un resumen: «Ana probó la API desplegada: 3 de 3 pruebas pasaron» (con ✗ y ⚠ si hubo fallos) |
+| 2.81 | Con otra persona conectada | Ve el resultado y el resumen sin recargar |
+| 2.82 | Si un endpoint modifica datos (set_field o uno propio con POST/PUT) | Sus casos salen **omitidos**: «Modifica datos: actívelo con…» |
+| 2.83 | Un **editor** marca «Incluir pruebas que modifican datos» y pulsa Probar | Pide confirmación. Al aceptar se ejecutan sobre un registro existente. Si no hay registros: «No hay registros de esta clase» |
+| 2.84 | Un **visor** abre Test | Puede pulsar Probar (solo lectura) pero **no ve** la casilla de pruebas que modifican datos |
+| 2.85 | En la lista de endpoints del chat Test | Cada endpoint probado lleva un chip «✓ probado» o «✗ falló» |
+| 2.86 | Doble clic en un endpoint → diagrama de ciclo de vida | Sección **«Pruebas ejecutadas contra la API desplegada»** con sus resultados, un botón **Probar este endpoint** y ✓/✗ sobre las ramas del diagrama que se probaron («existe» / «no existe») |
+| 2.87 | Preguntale en Test: `@ia cómo salió la última prueba` | Responde con los resultados reales: qué falló, por qué pudo fallar y qué probar después. Si no hay despliegue, dice que hay que desplegar primero |
+| 2.88 | Detené el despliegue y pulsá Probar | «No hay un despliegue en ejecución para probar» |
+| 2.89 | Pulsá Probar dos veces seguidas muy rápido | La segunda dice «Ya hay una prueba en curso» |
 
 ## 3. Registro de actividad (Fase 2)
 

@@ -42,6 +42,7 @@ services:
     depends_on:
       mongodb: { condition: service_healthy }
       redis: { condition: service_healthy }
+    networks: [default, uml-generated]  # reaches the generated apps directly to run their tests (the "Probar" button of the Test chat)
     ports: ["${BACKEND_PORT:-8000}:8000"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

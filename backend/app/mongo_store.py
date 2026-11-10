@@ -214,6 +214,10 @@ class MongoStore:
         return self.database["ai_proposals"]
 
     @property
+    def test_runs(self):
+        return self.database["test_runs"]
+
+    @property
     def device_tokens(self):
         return self.database["device_tokens"]
 
@@ -245,6 +249,8 @@ class MongoStore:
         self.endpoint_specs.create_index([("diagram_id", ASCENDING), ("created_at", ASCENDING), ("name", ASCENDING)], name="ix_endpoint_specs_diagram_created")
         self.ai_proposals.create_index([("id", ASCENDING)], unique=True, name="uq_ai_proposals_id")
         self.ai_proposals.create_index([("diagram_id", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)], name="ix_ai_proposals_diagram_status")
+        self.test_runs.create_index([("id", ASCENDING)], unique=True, name="uq_test_runs_id")
+        self.test_runs.create_index([("diagram_id", ASCENDING), ("created_at", DESCENDING)], name="ix_test_runs_diagram_created")
         self.device_tokens.create_index([("token", ASCENDING)], unique=True, name="uq_device_token")
         self.device_tokens.create_index([("user_id", ASCENDING), ("platform", ASCENDING)], name="ix_device_token_user_platform")
         self.notifications.create_index([("id", ASCENDING)], unique=True, name="uq_notification_id")

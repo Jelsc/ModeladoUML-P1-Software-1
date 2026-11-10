@@ -719,7 +719,9 @@ select:focus {
 }
 .class-card {
   position: absolute;
-  width: 210px;
+  width: max-content;  /* grows with the longest name or attribute; the measured width feeds the relation geometry */
+  min-width: 210px;
+  max-width: 360px;
   background: var(--panel);
   border: 1px solid var(--line-strong);
   border-radius: 6px;
@@ -752,6 +754,21 @@ select:focus {
   padding: 12px;
   background: var(--panel-raised);
   border-bottom: 1px solid var(--line);
+}
+/* A long class name wraps (even without spaces) and never pushes the "+ Relación" button out of the card or squeezes it. */
+.class-title b {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.class-title .relation-action {
+  flex: none;
+  white-space: nowrap;
+}
+.class-section > div > :first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .class-section {
   padding: 8px 12px;
@@ -1502,3 +1519,27 @@ select:focus {
 .board-proposal .board-endpoint-status.accepted { color: #2e7d57; }
 .board-proposal-changes { margin: 6px 0 0; padding-left: 18px; }
 .board-proposal-changes li { margin: 2px 0; overflow-wrap: anywhere; }
+
+/* Probar: running the test cases against the deployed API (Test chat) and showing the result. */
+.board-tests { flex: none; max-height: 45%; padding: 6px 12px; overflow-y: auto; border-top: 1px solid var(--line); font-size: .85rem; }
+.board-tests summary { cursor: pointer; font-weight: 600; }
+.board-tests-note, .board-tests-last { margin: 6px 0 0; color: var(--text-secondary); font-size: .8rem; }
+.board-tests-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; }
+.board-tests-actions button { padding: 3px 12px; font-size: .8rem; }
+.board-tests-mutating { display: flex; align-items: center; gap: 4px; font-size: .78rem; }
+.board-tests-groups { display: grid; gap: 8px; margin: 8px 0 4px; padding: 0; list-style: none; }
+.board-test-group { padding: 6px 8px; background: var(--panel-raised); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 8px; }
+.board-test-group.passed { border-left-color: #4caf7d; } .board-test-group.failed { border-left-color: #d9534f; } .board-test-group.skipped { border-left-color: #e3b341; }
+.board-test-group-head { display: flex; align-items: center; gap: 6px; }
+.board-test-group ul, .method-flow-run ul { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+.board-test-result { display: grid; grid-template-columns: auto 1fr auto auto; align-items: baseline; gap: 2px 8px; font-size: .78rem; }
+.board-test-result p { grid-column: 2 / -1; margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.board-test-title { font-weight: 600; } .board-test-result small { color: var(--text-muted); }
+.board-test-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: .72rem; font-weight: 700; color: #fff; background: #999; }
+.board-test-icon.passed { background: #2e7d57; } .board-test-icon.failed { background: #d9534f; } .board-test-icon.skipped { background: #c99a1a; }
+.board-test-warning { color: #b8860b; }
+.board-test-chip { margin-left: auto; padding: 0 6px; border-radius: 10px; font-size: .7rem; font-weight: 600; }
+.board-test-chip.passed { color: #2e7d57; background: color-mix(in srgb, #4caf7d 18%, transparent); } .board-test-chip.failed { color: #d9534f; background: color-mix(in srgb, #d9534f 18%, transparent); } .board-test-chip.skipped { color: #b8860b; background: color-mix(in srgb, #e3b341 22%, transparent); }
+.board-test-chip + .board-endpoint-status { margin-left: 8px; }
+.method-flow-run-badge { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 6px; font-weight: 600; }
+.method-flow-svg .flow-mark { font-size: 15px; font-weight: 700; } .method-flow-svg .flow-mark.passed { fill: #2e7d57; } .method-flow-svg .flow-mark.failed { fill: #d9534f; }
