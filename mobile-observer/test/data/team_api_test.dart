@@ -7,6 +7,23 @@ import 'package:mobile_observer/data/team_api.dart';
 import 'package:mobile_observer/models/team_models.dart';
 
 void main() {
+  test('notification inbox uses authenticated GET and parses persisted event', () async {
+    http.Request? request;
+    final api = TeamApi(baseUrl: 'https://example.test/api', client: MockClient((value) async {
+      request = value;
+      return http.Response(
+        '[]', 200,
+      );
+    }));
+    api.useToken('jwt');
+    final items = await api.notificationInbox();
+    expect(items, isEmpty);
+    expect(request!.method, 'GET');
+    expect(request!.url.path, '/api/notifications/inbox');
+    expect(request!.headers['authorization'], 'Bearer jwt');
+    api.close();
+  });
+
   test(
     'normalizes direct and production URLs and rejects unsafe base paths',
     () {
@@ -179,10 +196,27 @@ void main() {
       await api.registerDeviceToken(registration);
       await api.unregisterDeviceToken(registration);
       expect(requests.map((request) => request.method), ['POST', 'DELETE']);
-      expect(requests.every((request) => request.url.path == '/devices/fcm-token'), isTrue);
-      expect(requests.every((request) => request.headers['authorization'] == 'Bearer session-token'), isTrue);
-      expect(requests.every((request) => request.body.contains('"platform":"android"')), isTrue);
-      expect(requests.every((request) => request.body.contains('fcm-token')), isTrue);
+      expect(
+        requests.every((request) => request.url.path == '/devices/fcm-token'),
+        isTrue,
+      );
+      expect(
+        requests.every(
+          (request) =>
+              request.headers['authorization'] == 'Bearer session-token',
+        ),
+        isTrue,
+      );
+      expect(
+        requests.every(
+          (request) => request.body.contains('"platform":"android"'),
+        ),
+        isTrue,
+      );
+      expect(
+        requests.every((request) => request.body.contains('fcm-token')),
+        isTrue,
+      );
     },
   );
 

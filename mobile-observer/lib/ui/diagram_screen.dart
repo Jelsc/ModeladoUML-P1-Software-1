@@ -369,12 +369,70 @@ class _ObserverDiagramScreenState extends State<ObserverDiagramScreen>
   }
 }
 
-class DiagramModelTab extends StatelessWidget {
+class DiagramModelTab extends StatefulWidget {
   const DiagramModelTab({super.key, required this.diagram});
   final DiagramData diagram;
 
   @override
-  Widget build(BuildContext context) => ListView(
+  State<DiagramModelTab> createState() => _DiagramModelTabState();
+}
+
+class _DiagramModelTabState extends State<DiagramModelTab> {
+  bool _diagramView = true;
+  final TransformationController _transform = TransformationController();
+
+  @override
+  void dispose() {
+    _transform.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final diagram = widget.diagram;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 8, 4),
+          child: Row(
+            children: [
+              SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: true,
+                    label: Text('Diagrama'),
+                    icon: Icon(Icons.account_tree_outlined),
+                  ),
+                  ButtonSegment(
+                    value: false,
+                    label: Text('Lista'),
+                    icon: Icon(Icons.list_alt),
+                  ),
+                ],
+                selected: {_diagramView},
+                onSelectionChanged: (value) =>
+                    setState(() => _diagramView = value.first),
+              ),
+              const Spacer(),
+              if (_diagramView && diagram.classes.isNotEmpty)
+                IconButton(
+                  tooltip: 'Restablecer vista',
+                  onPressed: () => _transform.value = Matrix4.identity(),
+                  icon: const Icon(Icons.center_focus_strong),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _diagramView
+              ? _UmlCanvas(diagram: diagram, controller: _transform)
+              : _modelList(diagram),
+        ),
+      ],
+    );
+  }
+
+  Widget _modelList(DiagramData diagram) => ListView(
     physics: const AlwaysScrollableScrollPhysics(),
     padding: const EdgeInsets.all(16),
     children: [
@@ -401,6 +459,209 @@ class DiagramModelTab extends StatelessWidget {
       ),
     ],
   );
+}
+
+class _UmlCanvas extends StatelessWidget {
+  const _UmlCanvas({required this.diagram, required this.controller});
+  final DiagramData diagram;
+  final TransformationController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    if (diagram.classes.isEmpty) {
+      return const Center(
+        child: _EmptyNote('Este diagrama todavía no tiene clases.'),
+      );
+    }
+    final positioned = <DiagramClass>[];
+    final used = <String>{};
+    for (var index = 0; index < diagram.classes.length; index++) {
+      final item = diagram.classes[index];
+      var x = item.x.clamp(0, 18000), y = item.y.clamp(0, 18000);
+      final key = '$x:$y';
+      if (!used.add(key)) {
+        x = (x + (index % 4) * 36).clamp(0, 18000);
+        y = (y + (index ~/ 4 + 1) * 36).clamp(0, 18000);
+      }
+      positioned.add(
+        DiagramClass(
+          id: item.id,
+          name: item.name,
+          x: x,
+          y: y,
+          isAssociation: item.isAssociation,
+          attributes: item.attributes,
+          methods: item.methods,
+        ),
+      );
+    }
+    final width =
+        (positioned
+                    .map((item) => item.x)
+                    .fold<int>(0, (a, b) => a > b ? a : b) +
+                320)
+            .clamp(640, 20000)
+            .toDouble();
+    final height =
+        (positioned
+                    .map((item) => item.y)
+                    .fold<int>(0, (a, b) => a > b ? a : b) +
+                240)
+            .clamp(480, 20000)
+            .toDouble();
+    return InteractiveViewer(
+      transformationController: controller,
+      constrained: false,
+      minScale: .15,
+      maxScale: 2.5,
+      boundaryMargin: const EdgeInsets.all(120),
+      child: SizedBox(
+        width: width,
+        height: height,
+        child: CustomPaint(
+          painter: _UmlPainter(
+            positioned,
+            diagram.relations,
+            Theme.of(context).colorScheme,
+            Theme.of(context).textTheme,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UmlPainter extends CustomPainter {
+  _UmlPainter(this.classes, this.relations, this.colors, this.textTheme);
+  final List<DiagramClass> classes;
+  final List<DiagramRelation> relations;
+  final ColorScheme colors;
+  final TextTheme textTheme;
+  static const nodeWidth = 240.0;
+  double _nodeHeight(DiagramClass item) =>
+      48 +
+      (item.attributes.length + item.methods.length) * 22.0 +
+      (item.attributes.isNotEmpty && item.methods.isNotEmpty ? 1 : 0) * 8;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final byId = {for (final item in classes) item.id: item};
+    for (final relation in relations) {
+      final source = byId[relation.sourceId], target = byId[relation.targetId];
+      if (source == null || target == null) continue;
+      final a = Offset(
+            source.x + nodeWidth / 2,
+            source.y + _nodeHeight(source) / 2,
+          ),
+          b = Offset(
+            target.x + nodeWidth / 2,
+            target.y + _nodeHeight(target) / 2,
+          );
+      canvas.drawLine(
+        a,
+        b,
+        Paint()
+          ..color = ObserverTheme.blue
+          ..strokeWidth = 2,
+      );
+      final label =
+          '${relation.type}${relation.label == null ? '' : ' · ${relation.label}'}${relation.sourceMultiplicity == null && relation.targetMultiplicity == null ? '' : ' · ${relation.sourceMultiplicity ?? ''} — ${relation.targetMultiplicity ?? ''}'}';
+      _drawText(
+        canvas,
+        label,
+        Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2),
+        textTheme.labelSmall?.copyWith(color: ObserverTheme.ink),
+        maxWidth: 200,
+      );
+    }
+    for (final item in classes) {
+      final rect = Rect.fromLTWH(
+        item.x.toDouble(),
+        item.y.toDouble(),
+        nodeWidth,
+        _nodeHeight(item),
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(12)),
+        Paint()..color = colors.surface,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(12)),
+        Paint()
+          ..color = ObserverTheme.ink
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+      var y = item.y + 8.0;
+      _drawText(
+        canvas,
+        item.name,
+        Offset(item.x + 12.0, y),
+        textTheme.titleSmall?.copyWith(
+          fontWeight: FontWeight.w700,
+          color: ObserverTheme.ink,
+        ),
+        maxWidth: nodeWidth - 24,
+      );
+      y += 32;
+      canvas.drawLine(
+        Offset(item.x.toDouble(), y),
+        Offset(item.x + nodeWidth, y),
+        Paint()..color = ObserverTheme.blue.withValues(alpha: .5),
+      );
+      y += 6;
+      for (final attribute in item.attributes) {
+        _drawText(
+          canvas,
+          '+ ${attribute.name}: ${attribute.type}',
+          Offset(item.x + 10.0, y),
+          textTheme.bodySmall?.copyWith(color: ObserverTheme.ink),
+          maxWidth: nodeWidth - 20,
+        );
+        y += 22;
+      }
+      if (item.attributes.isNotEmpty && item.methods.isNotEmpty) y += 8;
+      if (item.methods.isNotEmpty) {
+        canvas.drawLine(
+          Offset(item.x.toDouble(), y),
+          Offset(item.x + nodeWidth, y),
+          Paint()..color = ObserverTheme.blue.withValues(alpha: .5),
+        );
+        y += 6;
+      }
+      for (final method in item.methods) {
+        _drawText(
+          canvas,
+          '+ ${method.name}(): ${method.type}',
+          Offset(item.x + 10.0, y),
+          textTheme.bodySmall?.copyWith(color: ObserverTheme.ink),
+          maxWidth: nodeWidth - 20,
+        );
+        y += 22;
+      }
+    }
+  }
+
+  void _drawText(
+    Canvas canvas,
+    String value,
+    Offset offset,
+    TextStyle? style, {
+    required double maxWidth,
+  }) {
+    final painter = TextPainter(
+      text: TextSpan(text: value, style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: 2,
+      ellipsis: '…',
+    )..layout(maxWidth: maxWidth);
+    painter.paint(canvas, offset);
+  }
+
+  @override
+  bool shouldRepaint(covariant _UmlPainter oldDelegate) =>
+      oldDelegate.classes != classes ||
+      oldDelegate.relations != relations ||
+      oldDelegate.colors != colors;
 }
 
 class ChatReadOnlyTab extends StatelessWidget {

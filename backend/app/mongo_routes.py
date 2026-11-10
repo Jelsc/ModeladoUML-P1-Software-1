@@ -194,6 +194,15 @@ def mongo_me(user=Depends(current_user)):
     return _user_json(user)
 
 
+@router.get("/notifications/inbox")
+def mongo_notification_inbox(limit: int = Query(50, ge=1, le=100), store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    return [{
+        "id": item["id"], "event": item["event"], "diagram_id": item["diagram_id"],
+        "diagram_title": item["diagram_title"], "title": item["title"],
+        "body": item["body"], "created_at": item["created_at"],
+    } for item in store.notifications_for_user(user["id"], limit)]
+
+
 @router.post("/devices/fcm-token", status_code=204)
 def register_device_token(body: DeviceTokenBody, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
     store.register_device_token(body.token, user["id"], body.platform)

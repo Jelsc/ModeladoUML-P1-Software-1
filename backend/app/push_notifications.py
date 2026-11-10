@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +63,7 @@ class PushNotifications:
         return recipients
 
     async def publish(self, store, diagram_id: str, event: dict) -> None:
-        if not self.enabled or event.get("event") not in EVENTS:
+        if event.get("event") not in EVENTS:
             return
         try:
             await asyncio.to_thread(self._publish_sync, store, diagram_id, event)
@@ -83,6 +85,23 @@ class PushNotifications:
         recipient_ids = self._recipients(diagram, actor)
         if not recipient_ids:
             return
+        event_name = str(event["event"])
+        title = "Actualización del equipo"
+        body = "Hay nueva actividad en un diagrama."
+        now = datetime.now(timezone.utc)
+        for user_id in recipient_ids:
+            store.record_notification({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "event": event_name,
+                "diagram_id": str(diagram_id),
+                "diagram_title": str(diagram.get("title") or "Diagrama sin título")[:200],
+                "title": title,
+                "body": body,
+                "created_at": now,
+            })
+        if not self.enabled:
+            return
         tokens = store.device_tokens_for_users(recipient_ids)
         if not tokens:
             return
@@ -92,7 +111,7 @@ class PushNotifications:
             try:
                 result = self.sender(
                     [item["token"] for item in batch], data,
-                    "Actualización del equipo", "Hay nueva actividad en un diagrama.",
+                    title, body,
                 )
             except Exception:
                 continue

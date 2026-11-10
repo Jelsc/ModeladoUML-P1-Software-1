@@ -109,6 +109,20 @@ class TeamApi implements DeviceTokenRegistrationContract {
         (items) => items.map(DiagramSummary.fromJson).toList(growable: false),
       );
 
+  Future<List<InboxNotification>> notificationInbox({
+    int limit = 50,
+    bool refresh = false,
+  }) async {
+    if (limit < 1 || limit > 100) throw ArgumentError.value(limit, 'limit');
+    return _getList(
+      'notifications/inbox',
+      query: {'limit': '$limit'},
+      refresh: refresh,
+    ).then(
+      (items) => items.map(InboxNotification.fromJson).toList(growable: false),
+    );
+  }
+
   Future<DiagramData> diagram(String diagramId, {bool refresh = false}) async =>
       DiagramData.fromJson(
         await _getObject('diagrams/${_segment(diagramId)}', refresh: refresh),
@@ -193,9 +207,7 @@ class TeamApi implements DeviceTokenRegistrationContract {
     if (bearer == null || bearer.isEmpty) {
       throw const ApiFailure('Inicie sesión para continuar.', statusCode: 401);
     }
-    final response = await (method == 'POST'
-        ? _client.post
-        : _client.delete)(
+    final response = await (method == 'POST' ? _client.post : _client.delete)(
       endpoint('devices/fcm-token'),
       headers: {
         'Content-Type': 'application/json',
