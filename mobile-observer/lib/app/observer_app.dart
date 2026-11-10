@@ -12,7 +12,7 @@ import '../ui/diagram_screen.dart';
 import '../ui/login_screen.dart';
 import '../ui/observer_theme.dart';
 
-const defaultObserverServerUrl = 'http://10.0.2.2:8000';
+const defaultObserverServerUrl = 'https://api-primerpacialsw.duckdns.org';
 
 class ObserverApp extends StatefulWidget {
   const ObserverApp({
@@ -41,7 +41,6 @@ class _ObserverAppState extends State<ObserverApp> {
   late final StreamSubscription<String> _tokenRefreshSubscription;
   late TeamApi _api;
   TeamUser? _user;
-  String _serverUrl = defaultObserverServerUrl;
   String? _loginMessage;
   String? _pendingDiagramId;
   String? _pendingDiagramTitle;
@@ -52,7 +51,7 @@ class _ObserverAppState extends State<ObserverApp> {
   @override
   void initState() {
     super.initState();
-    _api = TeamApi(baseUrl: _serverUrl);
+    _api = TeamApi(baseUrl: defaultObserverServerUrl);
     _tapSubscription = _push.taps.listen(_handlePushTap);
     _foregroundSubscription = _push.foregroundMessages.listen(
       _handleForegroundMessage,
@@ -62,15 +61,6 @@ class _ObserverAppState extends State<ObserverApp> {
   }
 
   Future<void> _initialize() async {
-    final savedUrl = await _sessionStore.readServerUrl();
-    if (savedUrl != null) {
-      try {
-        _serverUrl = TeamApi.normalizeBaseUrl(savedUrl);
-        _api.changeBaseUrl(_serverUrl);
-      } on FormatException {
-        _serverUrl = defaultObserverServerUrl;
-      }
-    }
     await _push.initialize();
     _pushAvailability = _push.availability;
     final savedToken = await _sessionStore.readToken();
@@ -96,15 +86,11 @@ class _ObserverAppState extends State<ObserverApp> {
     _openPendingPush();
   }
 
-  Future<void> _signIn(String serverUrl, String email, String password) async {
-    final normalized = TeamApi.normalizeBaseUrl(serverUrl);
-    _api.changeBaseUrl(normalized);
-    await _sessionStore.writeServerUrl(normalized);
+  Future<void> _signIn(String email, String password) async {
     final result = await _api.signIn(email, password);
     await _sessionStore.writeToken(result.token);
     if (!mounted) return;
     setState(() {
-      _serverUrl = normalized;
       _user = result.user;
       _loginMessage = null;
     });
@@ -221,7 +207,6 @@ class _ObserverAppState extends State<ObserverApp> {
         ? const _StartupScreen()
         : _user == null
         ? LoginScreen(
-            initialServerUrl: _serverUrl,
             message: _loginMessage,
             onSignIn: _signIn,
           )

@@ -3,14 +3,11 @@ import 'package:flutter/material.dart';
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
     super.key,
-    required this.initialServerUrl,
     required this.onSignIn,
     this.message,
   });
 
-  final String initialServerUrl;
-  final Future<void> Function(String serverUrl, String email, String password)
-  onSignIn;
+  final Future<void> Function(String email, String password) onSignIn;
   final String? message;
 
   @override
@@ -18,9 +15,6 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  late final _serverController = TextEditingController(
-    text: widget.initialServerUrl,
-  );
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
@@ -29,7 +23,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
-    _serverController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -43,7 +36,6 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     try {
       await widget.onSignIn(
-        _serverController.text,
         _emailController.text.trim(),
         _passwordController.text,
       );
@@ -92,20 +84,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            TextFormField(
-                              controller: _serverController,
-                              keyboardType: TextInputType.url,
-                              autocorrect: false,
-                              decoration: const InputDecoration(
-                                labelText: 'Servidor',
-                                prefixIcon: Icon(Icons.dns_outlined),
-                              ),
-                              validator: (value) =>
-                                  value == null || value.trim().isEmpty
-                                  ? 'Ingrese la URL del servidor.'
-                                  : null,
-                            ),
-                            const SizedBox(height: 14),
                             TextFormField(
                               controller: _emailController,
                               keyboardType: TextInputType.emailAddress,
