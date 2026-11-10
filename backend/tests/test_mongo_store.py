@@ -110,4 +110,4 @@ def test_diagram_round_trip_preserves_nested_aggregate_and_normalizes_values():
     assert result["relations"][0]["label"] is None
     assert result["members"][0]["user_id"] == 18
     assert result["updated_at"].tzinfo == timezone.utc
-    assert result["settings"] == {"ai_enabled": False, "ai_can_edit": True}
+    assert result["settings"] == {"ai_enabled": False, "ai_can_edit": True, "ai_requires_approval": True}, "a diagram saved before the switch existed asks for approval"

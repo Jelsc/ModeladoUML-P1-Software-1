@@ -37,6 +37,11 @@ def test_structured_specs_get_their_defaults():
     assert spec(name="buscarPorEmail", kind="find_by_field", field="email", http_method="DELETE")["http_method"] == "GET", "structured kinds fix their own verb"
 
 
+def test_path_variables_the_ai_adds_to_variable_free_kinds_fall_back_to_the_default_route():
+    assert spec(name="buscarPorEmail", kind="find_by_field", field="email", path="/por-email/{email}")["path"] == "/por-email"
+    assert spec(name="contarClientes", kind="count", path="/{total}/contar")["path"] == "/contar"
+
+
 CUSTOM = {"name": "aplicarDescuento", "kind": "custom", "http_method": "POST", "path": "/{id}/aplicar-descuento", "return_type": "entity", "params": [{"name": "id", "type": "Long", "source": "path"}, {"name": "porcentaje", "type": "BigDecimal", "source": "query"}], "java_body": "Cliente c = repository.findById(id).orElseThrow();\nc.setTotal(c.getTotal().subtract(c.getTotal().multiply(porcentaje)));\nreturn repository.save(c);"}
 
 
@@ -189,6 +194,7 @@ def test_endpoints_are_only_designed_in_desarrollo(env):
     create_cliente(env)
     env.llm.queue.append(proposal(FIND)); ask(env, "@ia buscar por email", channel="diseno")
     assert endpoints_of(env) == [] and "se diseñan en el chat Desarrollo" in last_reply(env, "diseno")
+    assert "No hice" not in last_reply(env, "diseno") and "He creado" not in last_reply(env, "diseno"), "the reply must not claim it created anything"
     env.llm.queue.append(proposal(FIND)); ask(env, "@ia buscar por email", channel="test")
     assert endpoints_of(env) == [] and "chat es de consulta" in last_reply(env, "test")
 

@@ -161,6 +161,7 @@ class ChatBody(BaseModel):
 class SettingsBody(BaseModel):
     ai_enabled: bool
     ai_can_edit: bool
+    ai_requires_approval: bool = True
 
 
 class DeviceTokenBody(BaseModel):
@@ -290,7 +291,7 @@ def mongo_delete_user(user_id: int, store: MongoStore = Depends(get_mongo_store)
     for diagram in diagrams:
         did = diagram["id"]
         store.diagrams.delete_one({"id": did})
-        for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs):
+        for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals):
             collection.delete_many({"diagram_id": did})
     store.diagrams.update_many({}, {"$pull": {"members": {"user_id": user_id}}})
     store.chat_messages.update_many({"author_user_id": user_id}, {"$set": {"author_user_id": None}})
@@ -327,7 +328,7 @@ def mongo_delete_diagram(diagram_id: uuid.UUID, store: MongoStore = Depends(get_
         from .deployment import cleanup
         cleanup(SimpleNamespace(**deployment))
     store.diagrams.delete_one({"id": document["id"]})
-    for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs):
+    for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals):
         collection.delete_many({"diagram_id": document["id"]})
     return {"ok": True}
 
@@ -594,14 +595,14 @@ async def mongo_delete_relation(relation_id: uuid.UUID, store: MongoStore = Depe
 @router.get("/diagrams/{diagram_id}/ai-settings")
 def mongo_get_settings(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
     d, _ = _find_diagram(store, user, diagram_id)
-    return {"ai_enabled": d.get("ai_enabled", True), "ai_can_edit": d.get("ai_can_edit", True)}
+    return {"ai_enabled": d.get("ai_enabled", True), "ai_can_edit": d.get("ai_can_edit", True), "ai_requires_approval": d.get("ai_requires_approval", True)}
 
 
 @router.put("/diagrams/{diagram_id}/ai-settings")
 async def mongo_set_settings(diagram_id: uuid.UUID, body: SettingsBody, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
-    d = _owner(store, user, diagram_id); d["ai_enabled"], d["ai_can_edit"] = body.ai_enabled, body.ai_can_edit
-    d["settings"] = {"ai_enabled": body.ai_enabled, "ai_can_edit": body.ai_can_edit}; _save_diagram(store, d)
-    payload = {"ai_enabled": d["ai_enabled"], "ai_can_edit": d["ai_can_edit"]}; await _event(d["id"], "ai.settings", **payload); return payload
+    d = _owner(store, user, diagram_id); d["ai_enabled"], d["ai_can_edit"], d["ai_requires_approval"] = body.ai_enabled, body.ai_can_edit, body.ai_requires_approval
+    d["settings"] = {"ai_enabled": body.ai_enabled, "ai_can_edit": body.ai_can_edit, "ai_requires_approval": body.ai_requires_approval}; _save_diagram(store, d)
+    payload = {"ai_enabled": d["ai_enabled"], "ai_can_edit": d["ai_can_edit"], "ai_requires_approval": d["ai_requires_approval"]}; await _event(d["id"], "ai.settings", **payload); return payload
 
 
 def _endpoint_json(store, spec):
@@ -624,6 +625,57 @@ def _editable_endpoint(store, user, endpoint_id):
     if not spec: raise HTTPException(404, "Endpoint no encontrado")
     can_edit(store, user, spec["diagram_id"])
     return spec
+
+
+def _proposal_json(store, proposal):
+    decider = store.user_by_id(proposal["decided_by"]) if proposal.get("decided_by") is not None else None
+    return {"id": proposal["id"], "diagram_id": proposal["diagram_id"], "channel": proposal.get("channel", "diseno"), "status": proposal["status"],
+            "requested_by": proposal.get("requester_name"), "summary": proposal.get("summary", []), "created_at": iso_utc(proposal["created_at"]),
+            "decided_by": decider["name"] if decider else None, "decided_at": iso_utc(proposal["decided_at"]) if proposal.get("decided_at") else None,
+            "result": proposal.get("result")}
+
+
+def _editable_proposal(store, user, proposal_id):
+    proposal = store.ai_proposals.find_one({"id": _id(proposal_id)})
+    if not proposal: raise HTTPException(404, "Propuesta no encontrada")
+    can_edit(store, user, proposal["diagram_id"])
+    return proposal
+
+
+@router.get("/diagrams/{diagram_id}/ai-proposals")
+def mongo_list_proposals(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    """Pending proposals (oldest first) plus the latest decided ones, so the team can see what was accepted or rejected."""
+    diagram, _ = _find_diagram(store, user, diagram_id)
+    pending = list(store.ai_proposals.find({"diagram_id": diagram["id"], "status": "pending"}, {"_id": False}).sort([("created_at", 1)]))
+    decided = list(store.ai_proposals.find({"diagram_id": diagram["id"], "status": {"$ne": "pending"}}, {"_id": False}).sort([("created_at", -1)]).limit(5))
+    return [_proposal_json(store, item) for item in pending + decided]
+
+
+@router.post("/ai-proposals/{proposal_id}/accept")
+async def mongo_accept_proposal(proposal_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    from .assistant import brain
+    proposal = _editable_proposal(store, user, proposal_id)
+    diagram = store.diagram_by_id(proposal["diagram_id"])
+    if not diagram.get("ai_enabled", True) or not diagram.get("ai_can_edit", True): raise HTTPException(409, "La IA no puede editar este diagrama ahora")
+    claimed = store.ai_proposals.find_one_and_update({"id": proposal["id"], "status": "pending"}, {"$set": {"status": "accepted", "decided_by": user["id"], "decided_at": utc_now()}})
+    if not claimed: raise HTTPException(409, "Esta propuesta ya fue resuelta por otra persona")
+    done, skipped, touched = await brain.apply_actions(store, user, {"id": proposal["diagram_id"]}, claimed.get("actions", []))
+    status = "accepted" if done else "stale"  # nothing could be applied (the diagram changed since): say so instead of pretending
+    store.ai_proposals.update_one({"id": proposal["id"]}, {"$set": {"status": status, "result": {"done": done, "skipped": skipped}}})
+    store.record_activity(proposal["diagram_id"], user, "ai.proposal_accepted" if done else "ai.proposal_stale", "proposal", proposal["id"],
+                          f"{user['name']} aceptó la propuesta de la IA ({len(done)} cambio{'s' if len(done) != 1 else ''} aplicado{'s' if len(done) != 1 else ''})" if done else f"{user['name']} intentó aceptar una propuesta que ya no se podía aplicar")
+    await _event(proposal["diagram_id"], "ai.proposals", change=status, proposal_id=proposal["id"], changed_class_ids=touched["classes"], changed_relation_ids=touched["relations"])
+    return _proposal_json(store, store.ai_proposals.find_one({"id": proposal["id"]}))
+
+
+@router.post("/ai-proposals/{proposal_id}/reject")
+async def mongo_reject_proposal(proposal_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    proposal = _editable_proposal(store, user, proposal_id)
+    claimed = store.ai_proposals.find_one_and_update({"id": proposal["id"], "status": "pending"}, {"$set": {"status": "rejected", "decided_by": user["id"], "decided_at": utc_now()}})
+    if not claimed: raise HTTPException(409, "Esta propuesta ya fue resuelta por otra persona")
+    store.record_activity(proposal["diagram_id"], user, "ai.proposal_rejected", "proposal", proposal["id"], f"{user['name']} rechazó una propuesta de la IA")
+    await _event(proposal["diagram_id"], "ai.proposals", change="rejected", proposal_id=proposal["id"])
+    return _proposal_json(store, store.ai_proposals.find_one({"id": proposal["id"]}))
 
 
 @router.get("/diagrams/{diagram_id}/endpoints")

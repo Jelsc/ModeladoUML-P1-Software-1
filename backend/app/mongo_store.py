@@ -132,6 +132,7 @@ def diagram_to_document(diagram: Any) -> dict[str, Any]:
         "owner_id": int(_required(diagram, "owner_id")),
         "ai_enabled": bool(_read(diagram, "ai_enabled", True)),
         "ai_can_edit": bool(_read(diagram, "ai_can_edit", True)),
+        "ai_requires_approval": bool(_read(diagram, "ai_requires_approval", True)),
         "updated_at": _value(_read(diagram, "updated_at")) or utc_now(),
         "classes": classes,
         "relations": [{
@@ -155,6 +156,7 @@ def diagram_to_document(diagram: Any) -> dict[str, Any]:
         "settings": {
             "ai_enabled": bool(_read(diagram, "ai_enabled", True)),
             "ai_can_edit": bool(_read(diagram, "ai_can_edit", True)),
+            "ai_requires_approval": bool(_read(diagram, "ai_requires_approval", True)),
         },
     }
 
@@ -208,6 +210,10 @@ class MongoStore:
         return self.database[ENDPOINT_SPECS]
 
     @property
+    def ai_proposals(self):
+        return self.database["ai_proposals"]
+
+    @property
     def device_tokens(self):
         return self.database["device_tokens"]
 
@@ -237,6 +243,8 @@ class MongoStore:
         self.endpoint_specs.create_index([("id", ASCENDING)], unique=True, name="uq_endpoint_specs_id")
         self.endpoint_specs.create_index([("class_id", ASCENDING), ("name", ASCENDING)], unique=True, name="uq_endpoint_class_name")
         self.endpoint_specs.create_index([("diagram_id", ASCENDING), ("created_at", ASCENDING), ("name", ASCENDING)], name="ix_endpoint_specs_diagram_created")
+        self.ai_proposals.create_index([("id", ASCENDING)], unique=True, name="uq_ai_proposals_id")
+        self.ai_proposals.create_index([("diagram_id", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)], name="ix_ai_proposals_diagram_status")
         self.device_tokens.create_index([("token", ASCENDING)], unique=True, name="uq_device_token")
         self.device_tokens.create_index([("user_id", ASCENDING), ("platform", ASCENDING)], name="ix_device_token_user_platform")
         self.notifications.create_index([("id", ASCENDING)], unique=True, name="uq_notification_id")

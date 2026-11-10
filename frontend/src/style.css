@@ -1378,6 +1378,7 @@ select:focus {
 .board-chat-ai-list { margin-top: 6px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); }
 .board-chat-ai-list.done { border-left: 3px solid #4caf7d; }
 .board-chat-ai-list.skipped { border-left: 3px solid #e3b341; }
+.board-chat-ai-list.proposed { border-left: 3px solid #5b8def; }
 .board-chat-ai-list b { font-size: 0.8rem; }
 .board-chat-ai-list ul { margin: 4px 0 0; padding-left: 18px; }
 .board-chat-ai-list li { margin: 2px 0; overflow-wrap: anywhere; }
@@ -1486,3 +1487,18 @@ select:focus {
 .board-digest li { margin: 2px 0; overflow-wrap: anywhere; }
 .board-digest li.ai { color: var(--focus); }
 .board-digest-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
+/* Changes the AI proposes to the diagram: pending until a member accepts them. */
+.board-proposals { flex: none; max-height: 40%; padding: 6px 12px; overflow-y: auto; border-top: 1px solid var(--line); font-size: .85rem; }
+.board-proposals summary { cursor: pointer; font-weight: 600; }
+.board-proposals > ul { display: grid; gap: 8px; margin: 8px 0 4px; padding: 0; list-style: none; }
+.board-proposal { padding: 8px 10px; background: var(--panel-raised); border: 1px solid var(--line); border-radius: 8px; border-left: 3px solid #5b8def; }
+.board-proposal.accepted { border-left-color: #4caf7d; }
+.board-proposal.rejected, .board-proposal.stale { border-left-color: var(--line); opacity: .8; }
+.board-proposal-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.board-proposal-head small { color: var(--text-secondary); }
+.board-proposal .board-endpoint-status { margin-left: 0; }
+.board-proposal .board-endpoint-status.pending { color: #3a6fd8; }
+.board-proposal .board-endpoint-status.accepted { color: #2e7d57; }
+.board-proposal-changes { margin: 6px 0 0; padding-left: 18px; }
+.board-proposal-changes li { margin: 2px 0; overflow-wrap: anywhere; }

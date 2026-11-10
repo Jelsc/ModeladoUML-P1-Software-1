@@ -74,7 +74,7 @@ La suite corre en Python 3.12 dentro de Docker (el Python 3.14 de Windows no sir
 ```
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo:ro" uml-backend-test:py312 bash -c 'cd /repo && tar --exclude=node_modules --exclude=.git --exclude=mobile --exclude=.atl --exclude=dist -cf - . | tar -xf - -C /work && cd /work/backend && python -m pytest -q 2>&1 | tail -3'
 ```
-- [ ] Resultado esperado: **`23 failed, 328 passed`** (necesita `pymongo` y `firebase-admin` instalados; las 23 fallas son las 21 de siempre —tests viejos que leen el código fuente— más 2 de notificaciones push de la migración a MongoDB que no son de esta parte).
+- [ ] Resultado esperado: **`25 failed, 341 passed`** (necesita `pymongo` y `firebase-admin` instalados; las 25 fallas son las 21 de siempre —tests viejos que leen el código fuente— más 4 de la migración a MongoDB y las notificaciones push del compañero, que no son de esta parte: 3 de `test_push_notifications` y 1 de `test_mongo_store` que no conoce la colección `notifications`).
 - [ ] Los 21 que fallan son **los mismos de antes de empezar** (no los causamos): 18 tests de contrato obsoletos que comparan texto exacto del frontend, 2 de XMI porque falta un archivo de ejemplo en el repo, y 1 de `class_patch_contract`. Si el número de fallos sube de 21, algo se rompió.
 - Archivos de pruebas nuevos: `test_chat_api.py`, `test_activity_log.py`, `test_ai_brain.py`, `test_digest.py`.
 
@@ -178,6 +178,25 @@ Necesitás una clase con atributos, por ejemplo **Cliente** con `email` (string)
 | 2.57 | En **Test**: `@ia explicame cómo funciona aplicarDescuento` | Explica el recorrido con los mismos pasos que ves en el diagrama y menciona las advertencias |
 
 ---
+
+### 2.e Cambios al diagrama con aprobación del equipo (chats Diseño y Desarrollo)
+
+Por defecto la IA **no toca el lienzo**: deja sus cambios como una *propuesta* y el equipo decide. El dueño lo controla en «Ajustes de la IA» → «Los cambios de la IA requieren la aprobación del equipo».
+
+| # | Qué hacés | Resultado esperado |
+|---|---|---|
+| 2.58 | En **Diseño**: `@ia agregale la edad a Customer` | La respuesta muestra un bloque azul «Propuesta pendiente de aprobación» con «Agregar el atributo age: integer a Customer». **El lienzo no cambia** |
+| 2.59 | Mirá arriba del campo de mensaje | Aparece «1 propuesta pendiente de aprobación» desplegada, con **Aceptar** y **Rechazar** |
+| 2.60 | Con otro usuario (editor) en otra ventana | Ve la misma propuesta al instante, sin recargar |
+| 2.61 | Pulsá **Aceptar** | El atributo aparece en la clase para todos, la clase se resalta unos segundos y la propuesta pasa a «Aceptada por <nombre>» |
+| 2.62 | Pedí otra cosa y pulsá **Rechazar** | El diagrama no cambia y queda «Rechazada por <nombre>» |
+| 2.63 | Dos personas pulsan Aceptar casi a la vez | Solo una la aplica; la otra ve «ya fue resuelta por otra persona». El atributo no se duplica |
+| 2.64 | `@ia creá la clase Invoice con el atributo total decimal` y aceptá | Una sola propuesta con las dos líneas; al aceptar se crean la clase y el atributo |
+| 2.65 | Con una propuesta pendiente, agregá a mano ese mismo atributo y aceptá | Queda «Ya no se podía aplicar»: no duplica nada |
+| 2.66 | `@ia eliminá la clase Order` | Sigue sin hacerlo: «lo tenés que hacer vos desde el editor» |
+| 2.67 | Un visor abre el chat | Ve las propuestas pero **no tiene** botones Aceptar/Rechazar |
+| 2.68 | El dueño desmarca «requieren la aprobación» y repite 2.58 | Se aplica directo, como antes («Hecho: …») |
+| 2.69 | En **Test** | No hay lista de propuestas: es solo consulta |
 
 ## 3. Registro de actividad (Fase 2)
 

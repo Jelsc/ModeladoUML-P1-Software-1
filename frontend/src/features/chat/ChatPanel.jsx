@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AiSettings } from "./AiSettings.jsx";
 import { EndpointList } from "./EndpointList.jsx";
+import { ProposalList } from "./ProposalList.jsx";
 import { CHANNELS, CHAT_MAX_LENGTH, applyMention, authorLabel, canSend, channelOf, clipText, formatChatTime, isOwnMessage, mentionOpen, parseAiMessage, replyPreview, thinkingLabel } from "./chat-model.js";
 
 function AiMessageBody({ content }) {
@@ -14,7 +15,7 @@ function MenuIcon() {
 }
 
 // Docked side panel (like a browser's AI sidebar): one fixed chat per area of the project, all collaborative and answered by the same AI.
-export function ChatPanel({ channel, onChannel, unreadByChannel = {}, endpoints = null, messages, loading, hasMore, error, sending, thinking = [], aiSettings = null, currentUserId, onSend, onLoadOlder, onDismissError, onClose }) {
+export function ChatPanel({ channel, onChannel, unreadByChannel = {}, endpoints = null, proposals = null, messages, loading, hasMore, error, sending, thinking = [], aiSettings = null, currentUserId, onSend, onLoadOlder, onDismissError, onClose }) {
   const [drafts, setDrafts] = useState({}), [replyTo, setReplyTo] = useState(null), [menuOpen, setMenuOpen] = useState(false);
   const listRef = useRef(null), inputRef = useRef(null), followBottom = useRef(true);
   const current = channelOf(channel), draft = drafts[current.id] || "", setDraft = (value) => setDrafts((all) => ({ ...all, [current.id]: value }));
@@ -72,6 +73,7 @@ export function ChatPanel({ channel, onChannel, unreadByChannel = {}, endpoints 
           </li>;
         })}
       </ol>
+      {(current.id === "diseno" || current.id === "desarrollo") && proposals && <ProposalList {...proposals} />}
       {(current.id === "desarrollo" || current.id === "test") && endpoints && <EndpointList {...endpoints} canEdit={endpoints.canEdit && current.id === "desarrollo"} />}
       {thinkingText && <p className="board-chat-thinking" role="status"><span className="board-chat-dots" aria-hidden="true"><i /><i /><i /></span>{thinkingText}</p>}
       {aiSettings && <AiSettings {...aiSettings} />}

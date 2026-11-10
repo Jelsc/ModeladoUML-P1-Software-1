@@ -94,6 +94,8 @@ def prepare_spec(raw, attributes, used_names=(), used_routes=()):
     path = str(raw.get("path") or "").strip() or {"find_by_field": f"/por-{_slug(spec['field'])}", "count": "/contar", "sum_field": f"/total-{_slug(spec['field'])}", "set_field": f"/{{id}}/{_kebab(name)}"}.get(kind, "")
     if not PATH.fullmatch(path) or ".." in path: return None, f"Ruta inválida: {path[:40]!r} (use segmentos en minúsculas como /por-email o /{{id}}/activar)"
     variables = _path_variables(path)
+    if variables and kind in ("find_by_field", "count", "sum_field"):  # these take no path variables (find_by_field reads ?value=): use the default route instead of rejecting the AI's proposal
+        path = {"find_by_field": f"/por-{_slug(spec['field'])}", "count": "/contar", "sum_field": f"/total-{_slug(spec['field'])}"}[kind]; variables = []
     if path.split("/")[1].startswith("{") and len(path.split("/")) == 2: return None, "La ruta no puede ser solo una variable (choca con el CRUD)"
     expected = ["id"] if kind == "set_field" else [p["name"] for p in spec["params"] if p["source"] == "path"] if kind == "custom" else []
     if sorted(variables) != sorted(expected): return None, f"Las variables de la ruta {variables} no coinciden con los parámetros {expected}"

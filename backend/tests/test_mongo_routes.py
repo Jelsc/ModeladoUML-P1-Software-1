@@ -85,6 +85,13 @@ class MemoryCollection:
         self.documents[:] = [document for document in self.documents if not all(document.get(key) == value for key, value in query.items())]
         return SimpleNamespace(deleted_count=before - len(self.documents))
 
+    def find_one_and_update(self, query, update, **_kwargs):
+        """Like PyMongo's default: returns the document as it was BEFORE the update (None when nothing matched)."""
+        document = self.find_one(query)
+        if document is None: return None
+        before = dict(document); document.update(update.get("$set", {}))
+        return before
+
 
 class MemoryCursor(list):
     def sort(self, keys, direction=None):
@@ -287,7 +294,7 @@ def test_mongo_assistant_keeps_rule_fallback_and_applies_authorized_action(monke
     diagram_id = "e1c41ab3-18ac-4a47-89d8-c4ec003b6ba8"
     user = {"id": 7, "name": "Owner", "role": "admin", "active": True}
     diagram = {"id": diagram_id, "owner_id": 7, "title": "Board", "ai_enabled": True,
-               "ai_can_edit": True, "classes": [], "relations": [], "members": []}
+               "ai_can_edit": True, "ai_requires_approval": False, "classes": [], "relations": [], "members": []}  # direct mode; approval mode is covered in test_ai_proposals_mongo.py
     trigger = {"content": "crea una clase Cliente", "channel": "diseno"}
     store = MongoStore("unused", "unused", client=MemoryClient())
     store.diagrams.documents.append(diagram)

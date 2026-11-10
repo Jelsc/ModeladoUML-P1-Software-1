@@ -79,7 +79,7 @@ export function thinkingLabel(all, channel) {
 export function parseAiMessage(content) {
   return String(content ?? "").split(/\n{2,}/).map((block) => {
     const lines = block.split("\n"), head = lines[0].trim();
-    if ((head === "Hecho:" || head === "No hice:") && lines.length > 1) return { type: "list", title: head.slice(0, -1), tone: head === "Hecho:" ? "done" : "skipped", items: lines.slice(1).map((line) => line.replace(/^\s*[•-]\s*/, "").trim()).filter(Boolean) };
+    if ((head === "Hecho:" || head === "No hice:" || head === "Propuesta pendiente de aprobación:") && lines.length > 1) return { type: "list", title: head.slice(0, -1), tone: head === "Hecho:" ? "done" : head === "No hice:" ? "skipped" : "proposed", items: lines.slice(1).map((line) => line.replace(/^\s*[•-]\s*/, "").trim()).filter(Boolean) };
     return { type: "text", text: block };
   }).filter((block) => block.type === "list" || block.text.trim());
 }
