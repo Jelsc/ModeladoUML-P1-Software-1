@@ -62,6 +62,9 @@ class VisionRelation(StrictModel):
     label: str | None = Field(default=None, max_length=200)
     source_multiplicity: str | None = Field(default=None, max_length=10)
     target_multiplicity: str | None = Field(default=None, max_length=10)
+    # Class tied to this relation by a dashed line (UML association class); name from the model, id resolved by the server.
+    association_class: str | None = Field(default=None, max_length=120)
+    association_class_id: str = Field(default="", max_length=80)
     selected: bool = True
     confidence: float = Field(default=1, ge=0, le=1)
 
@@ -106,6 +109,7 @@ VISION_RESPONSE_SCHEMA = {
                     "source": {"type": "string"}, "target": {"type": "string"},
                     "type": {"type": "string"}, "label": {"type": "string"},
                     "source_multiplicity": {"type": "string"}, "target_multiplicity": {"type": "string"},
+                    "association_class": {"type": "string"},
                 },
                 "required": ["source", "target", "type"],
             },
@@ -184,7 +188,7 @@ def normalize_provider_payload(payload) -> VisionProviderModel:
     for raw_relation in _provider_list(_provider_value(payload, "relations", "relationships", "associations", "connectors")):
         if not isinstance(raw_relation, Mapping):
             raise ValueError("Provider relation is not an object")
-        if set(raw_relation) - {"id", "source", "target", "sourceClass", "targetClass", "source_class", "target_class", "from", "to", "fromClass", "toClass", "sourceEndpoint", "targetEndpoint", "sourceEnd", "targetEnd", "type", "relationType", "relationshipType", "kind", "label", "name", "source_multiplicity", "target_multiplicity", "sourceMultiplicity", "targetMultiplicity", "sourceCardinality", "targetCardinality", "selected", "confidence"}:
+        if set(raw_relation) - {"id", "source", "target", "sourceClass", "targetClass", "source_class", "target_class", "from", "to", "fromClass", "toClass", "sourceEndpoint", "targetEndpoint", "sourceEnd", "targetEnd", "type", "relationType", "relationshipType", "kind", "label", "name", "source_multiplicity", "target_multiplicity", "sourceMultiplicity", "targetMultiplicity", "sourceCardinality", "targetCardinality", "association_class", "associationClass", "linkedClass", "selected", "confidence"}:
             raise ValueError("Provider relation contains unsupported fields")
         source = _provider_value(raw_relation, "source", "sourceClass", "source_class", "from", "fromClass", "sourceEndpoint", "sourceEnd")
         target = _provider_value(raw_relation, "target", "targetClass", "target_class", "to", "toClass", "targetEndpoint", "targetEnd")
@@ -200,7 +204,8 @@ def normalize_provider_payload(payload) -> VisionProviderModel:
                           "type": _provider_text(_provider_value(raw_relation, "type", "relationType", "relationshipType", "kind")),
                           "label": _provider_text(_provider_value(raw_relation, "label", "name")) or None,
                           "source_multiplicity": source_multiplicity or None,
-                          "target_multiplicity": target_multiplicity or None})
+                          "target_multiplicity": target_multiplicity or None,
+                          "association_class": _provider_text(_provider_value(raw_relation, "association_class", "associationClass", "linkedClass"), "name", "className") or None})
     warnings = _provider_value(payload, "warnings", "notes") or []
     if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
         raise ValueError("Provider warnings are malformed")
@@ -295,10 +300,17 @@ def normalize_proposal(raw: VisionProposal | VisionProviderModel) -> VisionPropo
         if relation_type not in _RELATION_TYPES or source_id not in ids or target_id not in ids:
             warnings.append(f"Se descartó una relación inválida: {relation.id}.")
             continue
+        link_id = relation.association_class_id.strip() or names.get((relation.association_class or "").strip().casefold(), "")
+        if link_id and (link_id not in ids or link_id in (source_id, target_id) or relation_type != "association"):
+            warnings.append(f"Se descartó la clase de asociación de la relación {relation.id or len(relations) + 1}: no es una clase distinta de sus extremos o la relación no es una asociación.")
+            link_id = ""
+        elif relation.association_class and not link_id:
+            warnings.append(f"No se encontró la clase de asociación «{relation.association_class}» entre las clases detectadas.")
         relations.append(relation.model_copy(update={
             "id": relation.id.strip() or f"relation-{len(relations) + 1}",
             "source_id": source_id,
             "target_id": target_id,
+            "association_class_id": link_id,
             "type": relation_type,
             "source_multiplicity": _normalize_multiplicity(relation.source_multiplicity, warnings, "origen"),
             "target_multiplicity": _normalize_multiplicity(relation.target_multiplicity, warnings, "destino"),
@@ -324,7 +336,13 @@ def _detect_with_provider(data: bytes, mime: str) -> VisionProviderModel:
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
     prompt = ("Analyze only the visible UML class diagram in this image. Detect class boxes, exact visible class names, "
                "attributes, methods, and relation line/arrow symbols: association, shared aggregation, composite composition, "
-               "generalization, dependency, abstraction, multiplicities, and labels. Never invent elements that are not visible. "
+               "generalization, dependency, abstraction, multiplicities, and labels. "
+               "IMPORTANT - association classes: when a class box is connected by a DASHED line to the MIDDLE of another "
+               "solid line that joins two other classes, that box is an association class of that solid relation. Do NOT "
+               "return the dashed line as a dependency or as a relation of its own. Return only the solid relation between "
+               "the two real endpoint classes (type association) and set its association_class field to the exact name of "
+               "the class attached by the dashed line. The association class must still appear in classes with its attributes. "
+               "Never invent elements that are not visible. "
                "For relation endpoints, return the exact visible class names in source and target. Never invent database IDs; "
                "the server will assign internal IDs after review. Put uncertain observations in warnings and lower confidence "
                "by omitting them. Return strict JSON.")
@@ -352,6 +370,11 @@ def _detect_with_provider(data: bytes, mime: str) -> VisionProviderModel:
 async def detect(file: UploadFile = File(...), user=Depends(current_user)):
     data = await file.read(MAX_IMAGE_BYTES + 1)
     mime = validate_image(data, file.content_type)
+    return detect_bytes(data, mime)
+
+
+def detect_bytes(data: bytes, mime: str) -> dict:
+    """Analyze an already validated image (the chat import reads the upload once, to keep it and to analyze it)."""
     return normalize_proposal(_detect_with_provider(data, mime)).model_dump()
 
 
@@ -425,3 +448,19 @@ def _diagram_json(diagram):
                          "methods": [{"id": str(m.id), "name": m.name, "type": m.return_type} for m in c.methods]} for c in diagram.classes],
             "relations": [{"id": str(r.id), "source_id": str(r.source_id), "target_id": str(r.target_id), "from": r.source.name, "to": r.target.name,
                            "type": r.type.value, "label": r.label, "source_multiplicity": r.source_multiplicity, "target_multiplicity": r.target_multiplicity} for r in diagram.relations]}
+
+
+def describe_detection(proposal: VisionProposal, existing_names=()) -> str:
+    """Chat message (Spanish) the AI posts after reading a photo, before the team confirms anything."""
+    by_id = {item.id: item.name for item in proposal.classes}
+    taken = {str(name).strip().casefold() for name in existing_names}
+    names = [item.name for item in proposal.classes]
+    lines = [f"Listo, analicé la foto. Detecté {len(names)} clase{'s' if len(names) != 1 else ''}" + (f" ({', '.join(names[:8])}{'…' if len(names) > 8 else ''})" if names else "")
+             + f" y {len(proposal.relations)} relación{'es' if len(proposal.relations) != 1 else ''}."]
+    links = [f"{by_id.get(r.association_class_id, '?')} (en la relación {by_id.get(r.source_id, '?')} – {by_id.get(r.target_id, '?')})" for r in proposal.relations if r.association_class_id]
+    if links: lines.append("Clases de asociación (línea segmentada): " + ", ".join(links) + ".")
+    repeated = [item.name for item in proposal.classes if item.name.strip().casefold() in taken]
+    if repeated: lines.append(f"Ya existen en este diagrama: {', '.join(repeated)}. Desmarcalas en la revisión para poder agregar el resto.")
+    if proposal.warnings: lines.append("Dudas: " + " ".join(proposal.warnings[:4]))
+    lines.append("Revisá la propuesta en la ventana y confirmá: hasta entonces no cambio nada.")
+    return "\n\n".join(lines)

@@ -1369,6 +1369,9 @@ select:focus {
 .board-chat-meta time { color: var(--text-muted); }
 .board-chat-message p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .board-chat-quote { margin: 6px 0 0; padding: 3px 8px; border-left: 3px solid var(--line-strong); color: var(--text-muted); font-size: .78rem; overflow-wrap: anywhere; }
+.board-chat-image-link { display: block; margin: 6px 0 0; }
+.board-chat-image { display: block; max-width: 100%; max-height: 220px; object-fit: contain; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface, transparent); }
+.board-chat-image-missing { margin: 6px 0 0; font-size: .78rem; }
 .board-chat-reply { margin-top: 4px; padding: 2px 6px; font-size: .72rem; }
 .board-chat-error { margin: 0; padding: 6px 14px; font-size: .82rem; }
 .board-chat-form { display: grid; gap: 6px; padding: 10px 14px 12px; border-top: 1px solid var(--line); }

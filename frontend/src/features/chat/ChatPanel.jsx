@@ -3,6 +3,7 @@ import { AiSettings } from "./AiSettings.jsx";
 import { EndpointList } from "./EndpointList.jsx";
 import { ProposalList } from "./ProposalList.jsx";
 import { TestPanel } from "./TestPanel.jsx";
+import { ChatImage } from "./ChatImage.jsx";
 import { CHANNELS, CHAT_MAX_LENGTH, applyMention, authorLabel, canSend, channelOf, clipText, formatChatTime, isOwnMessage, mentionOpen, parseAiMessage, replyPreview, thinkingLabel } from "./chat-model.js";
 
 function AiMessageBody({ content }) {
@@ -16,7 +17,7 @@ function MenuIcon() {
 }
 
 // Docked side panel (like a browser's AI sidebar): one fixed chat per area of the project, all collaborative and answered by the same AI.
-export function ChatPanel({ channel, onChannel, unreadByChannel = {}, endpoints = null, proposals = null, tests = null, messages, loading, hasMore, error, sending, thinking = [], aiSettings = null, currentUserId, onSend, onLoadOlder, onDismissError, onClose, canImportPhoto = false, onImportPhoto }) {
+export function ChatPanel({ diagramId, channel, onChannel, unreadByChannel = {}, endpoints = null, proposals = null, tests = null, messages, loading, hasMore, error, sending, thinking = [], aiSettings = null, currentUserId, onSend, onLoadOlder, onDismissError, onClose, canImportPhoto = false, onImportPhoto }) {
   const [drafts, setDrafts] = useState({}), [replyTo, setReplyTo] = useState(null), [menuOpen, setMenuOpen] = useState(false);
   const listRef = useRef(null), inputRef = useRef(null), followBottom = useRef(true);
   const current = channelOf(channel), draft = drafts[current.id] || "", setDraft = (value) => setDrafts((all) => ({ ...all, [current.id]: value }));
@@ -69,6 +70,7 @@ export function ChatPanel({ channel, onChannel, unreadByChannel = {}, endpoints 
           return <li key={message.id} className={`board-chat-message${own ? " own" : ""}${message.author_kind === "ai" ? " ai" : ""}`}>
             <div className="board-chat-meta"><b>{own ? "Usted" : authorLabel(message)}{message.author_kind === "ai" && <span className="board-chat-ai-tag">asistente</span>}</b><time dateTime={message.created_at}>{formatChatTime(message.created_at)}</time></div>
             {quote && <blockquote className="board-chat-quote"><b>{quote.author}</b> {quote.text}</blockquote>}
+            {message.image && diagramId && <ChatImage diagramId={diagramId} image={message.image} />}
             {message.author_kind === "ai" ? <AiMessageBody content={message.content} /> : <p>{message.content}</p>}
             <button type="button" className="ghost board-chat-reply" onClick={() => { setReplyTo(message); inputRef.current?.focus(); }} aria-label={`Responder a ${authorLabel(message)}`}>Responder</button>
           </li>;

@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 import sys
 import threading
 from pathlib import Path
@@ -469,3 +470,80 @@ def test_photo_proposal_rejects_existing_class_name_and_permissions(monkeypatch)
     with pytest.raises(mongo_routes.HTTPException) as permission:
         asyncio.run(mongo_routes.mongo_vision_apply_to_diagram(diagram_id, proposal, store, user))
     assert permission.value.status_code == 403
+
+
+def test_photo_import_links_association_class_and_the_ai_answers_in_the_chat(monkeypatch):
+    diagram_id = "e1c41ab3-18ac-4a47-89d8-c4ec003b6ba8"
+    original = {"id": diagram_id, "title": "Board", "owner_id": 7, "updated_at": "before", "classes": [], "relations": []}
+    store = MongoStore("unused", "unused", client=MemoryClient())
+    store.diagrams.documents.append(original)
+    user = {"id": 7, "name": "Owner"}
+    monkeypatch.setattr(mongo_routes, "_editable", lambda *_: original)
+    events = []
+    async def event(_diagram, name, **payload): events.append(name)
+    monkeypatch.setattr(mongo_routes, "_event", event)
+    raw = mongo_routes.vision.normalize_proposal(mongo_routes.vision.normalize_provider_payload({
+        "classes": [{"name": "Venta"}, {"name": "Producto"}, {"name": "Detalle_Venta"}],
+        "relations": [{"source": "Venta", "target": "Producto", "type": "association", "association_class": "Detalle_Venta"}]}))
+    result = asyncio.run(mongo_routes.mongo_vision_apply_to_diagram(diagram_id, raw, store, user))
+    by_name = {c["name"]: c for c in result["diagram"]["classes"]}
+    saved = store.diagrams.documents[0]
+    link = saved["relations"][0]["association_class_id"]
+    assert link == next(c["id"] for c in saved["classes"] if c["name"] == "Detalle_Venta")
+    assert [c["is_association"] for c in saved["classes"]] == [False, False, True]
+    reply = store.chat_messages.documents[-1]
+    assert reply["author_kind"] == "ai" and reply["channel"] == "diseno" and "Detalle_Venta" in reply["content"]
+    assert "chat.message" in events
+    text = mongo_routes.vision.describe_detection(raw, ["venta"])
+    assert "Detalle_Venta" in text and "Ya existen en este diagrama: Venta" in text and "no cambio nada" in text
+
+
+class FakeStorage:
+    def __init__(self): self.objects, self.removed = {}, []
+    def put(self, key, data, mime): self.objects[key] = (data, mime)
+    def get(self, key): return self.objects[key][0]
+    def delete_prefix(self, prefix): self.removed.append(prefix)
+
+
+def test_photo_from_the_chat_is_kept_in_object_storage_and_shown_with_the_message(monkeypatch):
+    from app import storage
+    diagram_id = "e1c41ab3-18ac-4a47-89d8-c4ec003b6ba8"
+    original = {"id": diagram_id, "title": "Board", "owner_id": 7, "classes": [], "relations": []}
+    store = MongoStore("unused", "unused", client=MemoryClient())
+    store.diagrams.documents.append(original)
+    store.users.documents.append({"id": 7, "name": "Owner"})
+    user = {"id": 7, "name": "Owner"}
+    fake = FakeStorage()
+    monkeypatch.setattr(storage, "get_storage", lambda: fake)
+    monkeypatch.setattr(mongo_routes, "_editable", lambda *_: original)
+    monkeypatch.setattr(mongo_routes, "_find_diagram", lambda *_: (original, None))
+    async def event(*_args, **_kwargs): pass
+    monkeypatch.setattr(mongo_routes, "_event", event)
+    monkeypatch.setattr(mongo_routes.vision, "detect_bytes", lambda data, mime: {"project_name": "x", "classes": [{"id": "a", "name": "Venta", "attributes": [], "methods": [], "selected": True, "confidence": 1}], "relations": [], "warnings": []})
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    async def read(_size): return png
+    upload = SimpleNamespace(read=read, content_type="image/png", filename="diagrama.png")
+    asyncio.run(mongo_routes.mongo_vision_detect(upload, uuid.UUID(diagram_id), store, user))
+    sent = store.chat_messages.documents[0]
+    assert sent["author_kind"] == "user" and sent["image"]["name"] == "diagrama.png" and sent["image"]["mime"] == "image/png"
+    assert fake.objects[sent["image"]["key"]] == (png, "image/png")
+    assert sent["image"]["key"].startswith(f"diagrams/{diagram_id}/")
+    shown = mongo_routes._chat_json(store, sent)
+    assert shown["image"] == {"id": sent["image"]["id"], "name": "diagrama.png"} and "key" not in shown["image"]
+    assert store.chat_messages.documents[1]["author_kind"] == "ai" and store.chat_messages.documents[1]["image"] is None
+    original_find = store.chat_messages.find_one
+    store.chat_messages.find_one = lambda query: sent if query.get("image.id") == sent["image"]["id"] else original_find(query)
+    response = asyncio.run(mongo_routes.mongo_chat_image(uuid.UUID(diagram_id), uuid.UUID(sent["image"]["id"]), store, user))
+    assert response.body == png and response.media_type == "image/png" and response.headers["x-content-type-options"] == "nosniff"
+    with pytest.raises(mongo_routes.HTTPException) as missing:
+        asyncio.run(mongo_routes.mongo_chat_image(uuid.UUID(diagram_id), uuid.uuid4(), store, user))
+    assert missing.value.status_code == 404
+    mongo_routes._drop_photos(diagram_id)
+    assert fake.removed == [f"diagrams/{diagram_id}/"]
+
+
+def test_photo_import_still_works_without_object_storage(monkeypatch):
+    from app import storage
+    monkeypatch.setattr(storage, "get_storage", lambda: None)
+    assert asyncio.run(mongo_routes._keep_photo("d", b"x", "image/png", "a.png")) is None
+    mongo_routes._drop_photos("d")

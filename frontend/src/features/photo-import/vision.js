@@ -10,10 +10,10 @@ function withTimeout(promise, timeout) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
 }
 
-export function detectFromPhoto(file) {
+export function detectFromPhoto(file, diagramId = null) {
   const body = new FormData();
   body.append("file", file);
-  return withTimeout(request("/vision/detect", { method: "POST", body }), DETECT_TIMEOUT);
+  return withTimeout(request(diagramId ? `/vision/detect?diagram_id=${encodeURIComponent(diagramId)}` : "/vision/detect", { method: "POST", body }), DETECT_TIMEOUT);
 }
 
 export function applyPhotoProposal(proposal, diagramId = null) {

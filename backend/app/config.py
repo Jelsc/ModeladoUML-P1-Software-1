@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"
     GEMINI_API_KEY: str | None = None
+    MINIO_ENDPOINT: str | None = None  # host:port of the MinIO container; empty = photos are not stored
+    MINIO_ACCESS_KEY: str | None = None
+    MINIO_SECRET_KEY: str | None = None
+    MINIO_BUCKET: str = "chat-images"
+    MINIO_SECURE: bool = False
     LLM_PROVIDER: str = "gemini"
     LLM_TIMEOUT_MS: int = 30000
 

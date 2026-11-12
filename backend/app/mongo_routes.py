@@ -11,7 +11,7 @@ from typing import Any
 from types import SimpleNamespace
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
 from pymongo.errors import DuplicateKeyError
@@ -294,6 +294,7 @@ def mongo_delete_user(user_id: int, store: MongoStore = Depends(get_mongo_store)
     for diagram in diagrams:
         did = diagram["id"]
         store.diagrams.delete_one({"id": did})
+        _drop_photos(did)
         for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals, store.test_runs):
             collection.delete_many({"diagram_id": did})
     store.diagrams.update_many({}, {"$pull": {"members": {"user_id": user_id}}})
@@ -331,6 +332,7 @@ def mongo_delete_diagram(diagram_id: uuid.UUID, store: MongoStore = Depends(get_
         from .deployment import cleanup
         cleanup(SimpleNamespace(**deployment))
     store.diagrams.delete_one({"id": document["id"]})
+    _drop_photos(document["id"])
     for collection in (store.chat_messages, store.activity, store.visits, store.deployments, store.endpoint_specs, store.ai_proposals, store.test_runs):
         collection.delete_many({"diagram_id": document["id"]})
     return {"ok": True}
@@ -827,7 +829,8 @@ def _chat_json(store, message):
     author = store.user_by_id(message["author_user_id"]) if message.get("author_user_id") is not None else None
     return {"id": message["id"], "diagram_id": message["diagram_id"], "author_user_id": message.get("author_user_id"),
             "author_name": author["name"] if author else None, "author_kind": message["author_kind"], "content": message["content"],
-            "reply_to_id": message.get("reply_to_id"), "channel": message["channel"], "created_at": iso_utc(message["created_at"])}
+            "reply_to_id": message.get("reply_to_id"), "channel": message["channel"], "created_at": iso_utc(message["created_at"]),
+            "image": {"id": message["image"]["id"], "name": message["image"].get("name")} if message.get("image") else None}
 
 
 @router.get("/diagrams/{diagram_id}/chat")
@@ -1076,9 +1079,74 @@ def mongo_export_zip(diagram_id: uuid.UUID, store: MongoStore = Depends(get_mong
                              headers={"Content-Disposition": f'attachment; filename="uml-{diagram_id}.zip"'})
 
 
+async def _keep_photo(diagram_id, data, mime, filename):
+    """Store the photo in MinIO. Returns the chat attachment, or None when storage is not configured or fails (the import still works)."""
+    from .storage import get_storage
+    storage = get_storage()
+    if storage is None: return None
+    image_id = stable_uuid(); key = f"diagrams/{diagram_id}/{image_id}"
+    try:
+        await asyncio.to_thread(storage.put, key, data, mime)
+    except Exception:
+        return None
+    return {"id": image_id, "key": key, "mime": mime, "name": (filename or "foto")[:120]}
+
+
+def _drop_photos(diagram_id):
+    """Best effort: the photos of a deleted diagram go away with it."""
+    from .storage import get_storage
+    storage = get_storage()
+    if storage is None: return
+    try: storage.delete_prefix(f"diagrams/{diagram_id}/")
+    except Exception: pass
+
+
+@router.get("/diagrams/{diagram_id}/chat-images/{image_id}")
+async def mongo_chat_image(diagram_id: uuid.UUID, image_id: uuid.UUID, store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    from .storage import get_storage
+    d, _ = _find_diagram(store, user, diagram_id)
+    message = store.chat_messages.find_one({"diagram_id": d["id"], "image.id": str(image_id)})
+    storage = get_storage()
+    if not message or storage is None: raise HTTPException(404, "Imagen no encontrada")
+    image = message["image"]
+    try:
+        data = await asyncio.to_thread(storage.get, image["key"])
+    except Exception:
+        raise HTTPException(404, "Imagen no encontrada")
+    return Response(content=data, media_type=image["mime"], headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
+
+
+async def _chat_say(store, diagram_id, content, user=None, reply_to=None, channel="diseno", image=None):
+    """Post a message in a team chat: as `user`, or as the AI when no user is given. Returns the stored message."""
+    asked = store.chat_messages.find_one({"id": reply_to}) if reply_to else None
+    message = {"id": stable_uuid(), "diagram_id": diagram_id, "author_user_id": user["id"] if user else None, "author_kind": "user" if user else "ai",
+               "content": content[:2000], "reply_to_id": reply_to, "channel": channel, "image": image,
+               "created_at": legacy.brain._after(asked.get("created_at")) if asked else utc_now()}
+    store.chat_messages.insert_one(message)
+    await _event(diagram_id, "chat.message", message=_chat_json(store, message))
+    return message
+
+
 @router.post("/vision/detect")
-async def mongo_vision_detect(file: UploadFile = File(...), user=Depends(current_user)):
-    return await vision.detect(file, user)
+async def mongo_vision_detect(file: UploadFile = File(...), diagram_id: uuid.UUID | None = Query(None), store: MongoStore = Depends(get_mongo_store), user=Depends(current_user)):
+    if diagram_id is None: return await vision.detect(file, user)
+    # Photo imported from a diagram's chat: the AI answers in that chat before (it is reading) and after (what it found).
+    diagram = _editable(store, user, diagram_id)
+    data = await file.read(vision.MAX_IMAGE_BYTES + 1)
+    mime = vision.validate_image(data, file.content_type)
+    image = await _keep_photo(diagram["id"], data, mime, file.filename)
+    asked = await _chat_say(store, diagram["id"], "📷 Subí una foto de un diagrama para agregarlo a este diagrama.", user=user, image=image)
+    await _event(diagram["id"], "ai.thinking", requester=user["name"], message_id=asked["id"], channel="diseno")
+    try:
+        result = await asyncio.to_thread(vision.detect_bytes, data, mime)
+        text = vision.describe_detection(vision.VisionProposal(**result), [c["name"] for c in diagram.get("classes", [])])
+    except HTTPException as error:
+        await _chat_say(store, diagram["id"], f"No pude leer la foto: {error.detail}", reply_to=asked["id"])
+        await _event(diagram["id"], "ai.done", message_id=asked["id"], trigger_id=asked["id"], channel="diseno", applied=0, changed_class_ids=[], changed_relation_ids=[])
+        raise
+    await _chat_say(store, diagram["id"], text, reply_to=asked["id"])
+    await _event(diagram["id"], "ai.done", message_id=asked["id"], trigger_id=asked["id"], channel="diseno", applied=0, changed_class_ids=[], changed_relation_ids=[])
+    return result
 
 
 @router.post("/vision/apply")
@@ -1110,8 +1178,11 @@ def mongo_vision_apply(proposal: vision.VisionProposal, store: MongoStore = Depe
                   "source_endpoint": None, "target_endpoint": None, "source_endpoint_type": "class", "target_endpoint_type": "class",
                   "type": item.type, "label": item.label.strip() if item.label else None,
                   "source_multiplicity": item.source_multiplicity, "target_multiplicity": item.target_multiplicity,
-                  "association_class_id": None} for item in normalized.relations
+                  "association_class_id": ids.get(item.association_class_id) if item.association_class_id else None} for item in normalized.relations
                  if item.selected and item.source_id in ids and item.target_id in ids]
+    linked_ids = {r["association_class_id"] for r in relations if r["association_class_id"]}
+    for item in classes:
+        item["is_association"] = item["id"] in linked_ids
     document = diagram_to_document({"id": stable_uuid(), "title": normalized.project_name.strip(), "owner_id": user["id"],
                                     "classes": classes, "relations": relations, "ai_enabled": True, "ai_can_edit": True})
     store.diagrams.insert_one(document)
@@ -1169,7 +1240,10 @@ async def mongo_vision_apply_to_diagram(diagram_id: uuid.UUID, proposal: vision.
                   "source_endpoint": None, "target_endpoint": None, "source_endpoint_type": "class", "target_endpoint_type": "class",
                   "type": item.type, "label": item.label.strip() if item.label else None,
                   "source_multiplicity": item.source_multiplicity, "target_multiplicity": item.target_multiplicity,
-                  "association_class_id": None} for item in normalized.relations if item.selected]
+                  "association_class_id": remap.get(item.association_class_id) if item.association_class_id else None} for item in normalized.relations if item.selected]
+    linked_ids = {item["association_class_id"] for item in relations if item["association_class_id"]}
+    for item in classes:
+        item["is_association"] = item["id"] in linked_ids
     expected_updated_at = diagram.get("updated_at")
     update = {"$set": {"updated_at": utc_now()}}
     if classes:
@@ -1189,6 +1263,12 @@ async def mongo_vision_apply_to_diagram(diagram_id: uuid.UUID, proposal: vision.
         await _event(diagram["id"], "relation.created", relation=relation_payloads[item["id"]], source="vision_import")
     await _event(diagram["id"], "diagram.updated", source="vision_import", added_class_ids=[item["id"] for item in classes],
                  added_relation_ids=[item["id"] for item in relations])
+    linked = [item["name"] for item in classes if item["is_association"]]
+    await _chat_say(store, diagram["id"], f"Listo, {user['name']}: agregué al diagrama {len(classes)} clase{'s' if len(classes) != 1 else ''} y {len(relations)} relación{'es' if len(relations) != 1 else ''} desde la foto"
+                    + (f", con {'la clase de asociación' if len(linked) == 1 else 'las clases de asociación'} {', '.join(linked)}." if linked else ".")
+                    + (f"\n\nQuedaron avisos: {' '.join(normalized.warnings[:4])}" if normalized.warnings else ""))
+    await _event(diagram["id"], "ai.done", message_id=None, trigger_id=None, channel="diseno", applied=len(classes) + len(relations),
+                 changed_class_ids=[item["id"] for item in classes], changed_relation_ids=[item["id"] for item in relations])
     return {"diagram": _diagram_json(updated), "warnings": normalized.warnings}
 
 

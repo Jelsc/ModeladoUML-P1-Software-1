@@ -170,3 +170,16 @@ def test_contract_keeps_detect_non_persistent_and_wires_atomic_apply():
     detect_source = source.split('async def detect', 1)[1].split('def _apply_validated', 1)[0]
     assert "db.commit" not in detect_source and "Diagram(" not in detect_source
     assert "db.rollback()" in source and "db.commit()" in source
+
+
+def test_association_class_is_resolved_from_dashed_link_and_never_duplicated_as_relation():
+    payload = {"classes": [{"name": "Venta"}, {"name": "Producto"}, {"name": "Detalle_Venta", "attributes": [{"name": "cantidad", "type": "Integer"}]}],
+               "relations": [{"source": "Venta", "target": "Producto", "type": "association", "source_multiplicity": "0..*", "target_multiplicity": "0..*", "association_class": "Detalle_Venta"},
+                             {"source": "Venta", "target": "Producto", "type": "association", "association_class": "Producto"},
+                             {"source": "Venta", "target": "Producto", "type": "association", "association_class": "Fantasma"}]}
+    proposal = vision.normalize_proposal(vision.normalize_provider_payload(payload))
+    ids = {c.name: c.id for c in proposal.classes}
+    assert proposal.relations[0].association_class_id == ids["Detalle_Venta"]
+    assert proposal.relations[1].association_class_id == "" and proposal.relations[2].association_class_id == ""
+    assert len(proposal.warnings) == 2
+    assert "association_class" in vision.VISION_RESPONSE_SCHEMA["properties"]["relations"]["items"]["properties"]

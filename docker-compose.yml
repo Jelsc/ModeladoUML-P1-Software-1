@@ -16,9 +16,23 @@ services:
     image: redis:7-alpine
     environment: { TZ: America/La_Paz }
     healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10 }
+  minio:  # object storage for the photos of the team chats; private (no published ports), only the backend reaches it
+    image: cgr.dev/chainguard/minio:latest  # MinIO no longer publishes its image on Docker Hub/quay; this one is maintained by Chainguard (only "latest" is free)
+    user: "0"  # the image runs as non-root and cannot write to a new named volume
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-uml-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-uml-minio-local-secret}
+      TZ: America/La_Paz
+    volumes: [minio_data:/data]
+    restart: unless-stopped
   backend:
     build: { context: ., dockerfile: backend/Dockerfile }
     environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-uml-minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-uml-minio-local-secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-chat-images}
       PERSISTENCE_BACKEND: mongodb
       MONGODB_URL: mongodb://mongodb:27017
       MONGODB_DATABASE: ${MONGODB_DATABASE:-modeladouml}
@@ -42,6 +56,7 @@ services:
     depends_on:
       mongodb: { condition: service_healthy }
       redis: { condition: service_healthy }
+      minio: { condition: service_started }
     networks: [default, uml-generated]  # reaches the generated apps directly to run their tests (the "Probar" button of the Test chat)
     ports: ["${BACKEND_PORT:-8000}:8000"]
     volumes:
@@ -116,6 +131,8 @@ services:
 volumes:
   mongodb_data:
     name: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}_mongodb_data
+  minio_data:
+    name: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}_minio_data
   frontend_node_modules:
     name: ${COMPOSE_PROJECT_NAME:-primer-parcial-sw1}_frontend_node_modules
   deploy_build:

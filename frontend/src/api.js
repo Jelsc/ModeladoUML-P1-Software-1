@@ -40,6 +40,6 @@ export async function request(path, options = {}) {
     const error = Error(formatValidationError(detail)); error.status = response.status; throw error;
   }
   const contentType = response.headers.get('content-type') || '';
-  return contentType.includes('zip') || contentType.includes('xml') || contentType.includes('octet-stream') ? response.blob() : response.json();
+  return contentType.startsWith('image/') || contentType.includes('zip') || contentType.includes('xml') || contentType.includes('octet-stream') ? response.blob() : response.json();
 }
 export const json = (method, body) => ({ method, body: JSON.stringify(body) });

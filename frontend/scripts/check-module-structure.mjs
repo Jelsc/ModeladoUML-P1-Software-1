@@ -22,6 +22,7 @@ const files = [
   "features/canvas/ZoomControls.jsx",
   "features/chat/ChatLauncher.jsx",
   "features/chat/ChatPanel.jsx",
+  "features/chat/ChatImage.jsx",
   "features/chat/useDiagramChat.js",
   "features/chat/chat-model.js",
   "features/chat/useAiHighlight.js",
