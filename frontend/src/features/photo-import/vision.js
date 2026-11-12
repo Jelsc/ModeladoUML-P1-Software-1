@@ -1,6 +1,6 @@
 import { request } from "../../api.js";
 
-const DETECT_TIMEOUT = 120000;
+const DETECT_TIMEOUT = 600000;
 
 function withTimeout(promise, timeout) {
   let timer;

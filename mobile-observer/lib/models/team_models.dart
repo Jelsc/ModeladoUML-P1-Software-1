@@ -155,6 +155,161 @@ class DiagramRelation {
       );
 }
 
+class VisionProposal {
+  const VisionProposal({
+    required this.projectName,
+    required this.classes,
+    required this.relations,
+    required this.warnings,
+  });
+  final String projectName;
+  final List<VisionClass> classes;
+  final List<VisionRelation> relations;
+  final List<String> warnings;
+  factory VisionProposal.fromJson(Map<String, dynamic> json) => VisionProposal(
+    projectName: _string(json['project_name'], fallback: 'Diagrama importado'),
+    classes: _objects(json['classes']).map(VisionClass.fromJson).toList(),
+    relations: _objects(
+      json['relations'],
+    ).map(VisionRelation.fromJson).toList(),
+    warnings: (json['warnings'] as List? ?? const [])
+        .whereType<String>()
+        .toList(),
+  );
+  Map<String, dynamic> toJson() => {
+    'project_name': projectName,
+    'classes': classes.map((value) => value.toJson()).toList(),
+    'relations': relations.map((value) => value.toJson()).toList(),
+    'warnings': warnings,
+  };
+}
+
+class VisionClass {
+  const VisionClass({
+    required this.id,
+    required this.name,
+    required this.selected,
+    required this.attributes,
+    required this.methods,
+  });
+  final String id, name;
+  final bool selected;
+  final List<VisionAttribute> attributes;
+  final List<VisionMethod> methods;
+  factory VisionClass.fromJson(Map<String, dynamic> json) => VisionClass(
+    id: _string(json['id']),
+    name: _string(json['name']),
+    selected: json['selected'] != false,
+    attributes: _objects(
+      json['attributes'],
+    ).map(VisionAttribute.fromJson).toList(),
+    methods: _objects(json['methods']).map(VisionMethod.fromJson).toList(),
+  );
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'selected': selected,
+    'attributes': attributes.map((e) => e.toJson()).toList(),
+    'methods': methods.map((e) => e.toJson()).toList(),
+  };
+}
+
+class VisionAttribute {
+  const VisionAttribute({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.selected,
+  });
+  final String id, name, type;
+  final bool selected;
+  factory VisionAttribute.fromJson(Map<String, dynamic> j) => VisionAttribute(
+    id: _string(j['id']),
+    name: _string(j['name']),
+    type: _string(j['type'], fallback: 'string'),
+    selected: j['selected'] != false,
+  );
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'type': type,
+    'selected': selected,
+  };
+}
+
+class VisionMethod {
+  const VisionMethod({
+    required this.id,
+    required this.name,
+    required this.returnType,
+    required this.selected,
+  });
+  final String id, name, returnType;
+  final bool selected;
+  factory VisionMethod.fromJson(Map<String, dynamic> j) => VisionMethod(
+    id: _string(j['id']),
+    name: _string(j['name']),
+    returnType: _string(j['return_type'], fallback: 'void'),
+    selected: j['selected'] != false,
+  );
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'return_type': returnType,
+    'selected': selected,
+  };
+}
+
+class VisionRelation {
+  const VisionRelation({
+    required this.id,
+    required this.sourceId,
+    required this.targetId,
+    required this.source,
+    required this.target,
+    required this.type,
+    this.label,
+    this.sourceMultiplicity,
+    this.targetMultiplicity,
+    this.associationClass,
+    this.associationClassId = '',
+    required this.selected,
+  });
+  final String id, sourceId, targetId, source, target, type;
+  final String? label, sourceMultiplicity, targetMultiplicity;
+  final String? associationClass;
+  final String associationClassId;
+  final bool selected;
+  factory VisionRelation.fromJson(Map<String, dynamic> j) => VisionRelation(
+    id: _string(j['id']),
+    sourceId: _string(j['source_id']),
+    targetId: _string(j['target_id']),
+    source: _string(j['source'], fallback: 'Clase'),
+    target: _string(j['target'], fallback: 'Clase'),
+    type: _string(j['type'], fallback: 'association'),
+    label: _nullableString(j['label']),
+    sourceMultiplicity: _nullableString(j['source_multiplicity']),
+    targetMultiplicity: _nullableString(j['target_multiplicity']),
+    associationClass: _nullableString(j['association_class']),
+    associationClassId: _string(j['association_class_id']),
+    selected: j['selected'] != false,
+  );
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'source_id': sourceId,
+    'target_id': targetId,
+    'source': source,
+    'target': target,
+    'type': type,
+    'label': label,
+    'source_multiplicity': sourceMultiplicity,
+    'target_multiplicity': targetMultiplicity,
+    'association_class': associationClass,
+    'association_class_id': associationClassId,
+    'selected': selected,
+  };
+}
+
 class DiagramData {
   const DiagramData({
     required this.id,
@@ -246,6 +401,7 @@ class ChatMessage {
     this.replyToId,
     required this.channel,
     this.createdAt,
+    this.image,
   });
   final String id;
   final String diagramId;
@@ -256,6 +412,7 @@ class ChatMessage {
   final String? replyToId;
   final String channel;
   final DateTime? createdAt;
+  final ChatImageMetadata? image;
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
     id: _string(json['id']),
@@ -269,7 +426,24 @@ class ChatMessage {
     replyToId: _nullableString(json['reply_to_id']),
     channel: _string(json['channel'], fallback: 'diseno'),
     createdAt: _date(json['created_at']),
+    image: json['image'] is Map
+        ? ChatImageMetadata.fromJson(
+            Map<String, dynamic>.from(json['image'] as Map),
+          )
+        : null,
   );
+}
+
+class ChatImageMetadata {
+  const ChatImageMetadata({required this.id, this.name});
+  final String id;
+  final String? name;
+
+  factory ChatImageMetadata.fromJson(Map<String, dynamic> json) =>
+      ChatImageMetadata(
+        id: _string(json['id']),
+        name: _nullableString(json['name']),
+      );
 }
 
 class ActivityItem {

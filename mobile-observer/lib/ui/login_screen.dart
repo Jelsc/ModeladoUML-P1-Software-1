@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({
-    super.key,
-    required this.onSignIn,
-    this.message,
-  });
+  const LoginScreen({super.key, required this.onSignIn, this.message});
 
   final Future<void> Function(String email, String password) onSignIn;
   final String? message;
@@ -69,7 +65,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Consulte diagramas, conversación y actividad del equipo. Esta aplicación es de solo lectura.',
+                    'Consulte diagramas y actividad, y converse con todo el equipo. No puede editar diagramas directamente; las solicitudes a la IA dependen de los permisos y aprobaciones del servidor.',
                     style: theme.textTheme.bodyLarge?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                       height: 1.45,
@@ -193,7 +189,7 @@ class _ReadOnlyNote extends StatelessWidget {
       const SizedBox(width: 9),
       Expanded(
         child: Text(
-          'Sin edición, envíos de chat ni acciones de IA.',
+          'No hay edición directa del diagrama. Los cambios solicitados a la IA dependen de los permisos del servidor y pueden requerir aprobación. Propietarios y editores pueden analizar fotos en Diseño.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),

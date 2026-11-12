@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -154,6 +155,116 @@ class TeamApi implements DeviceTokenRegistrationContract {
       refresh: refresh,
     );
     return items.map(ChatMessage.fromJson).toList(growable: false);
+  }
+
+  Future<void> sendChatMessage(
+    String diagramId, {
+    required String content,
+    required String channel,
+    String? replyToId,
+  }) async {
+    if (!chatChannels.contains(channel)) {
+      throw ArgumentError.value(channel, 'channel');
+    }
+    final bearer = _token;
+    if (bearer == null || bearer.isEmpty) {
+      throw const ApiFailure('Inicie sesión para continuar.', statusCode: 401);
+    }
+    final response = await _client.post(
+      endpoint('diagrams/${_segment(diagramId)}/chat'),
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $bearer',
+      },
+      body: jsonEncode({
+        'content': content,
+        'channel': channel,
+        'ai_read_only': false,
+        'reply_to_id': ?replyToId,
+      }),
+    );
+    final decoded = _decode(response);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _failure(response, decoded);
+    }
+    _getCache.removeWhere((key, _) => key.contains('/chat'));
+  }
+
+  Future<VisionProposal> uploadChatImage(
+    String diagramId, {
+    required String name,
+    required String mimeType,
+    required Uint8List bytes,
+  }) async {
+    final bearer = _token;
+    if (bearer == null || bearer.isEmpty) {
+      throw const ApiFailure('Inicie sesión para continuar.', statusCode: 401);
+    }
+    final request = http.MultipartRequest(
+      'POST',
+      endpoint('vision/detect', queryParameters: {'diagram_id': diagramId}),
+    )..headers['Authorization'] = 'Bearer $bearer';
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        bytes,
+        filename: name,
+        contentType: http.MediaType.parse(mimeType),
+      ),
+    );
+    final streamed = await _client.send(request);
+    final response = await http.Response.fromStream(streamed);
+    final decoded = _decode(response);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _failure(response, decoded);
+    }
+    _getCache.removeWhere((key, _) => key.contains('/chat'));
+    return VisionProposal.fromJson(Map<String, dynamic>.from(decoded as Map));
+  }
+
+  Future<void> applyVisionProposal(
+    String diagramId,
+    VisionProposal proposal,
+  ) async {
+    final bearer = _token;
+    if (bearer == null || bearer.isEmpty) {
+      throw const ApiFailure('Inicie sesión para continuar.', statusCode: 401);
+    }
+    final response = await _client.post(
+      endpoint('diagrams/${_segment(diagramId)}/vision/apply'),
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $bearer',
+      },
+      body: jsonEncode(proposal.toJson()),
+    );
+    final decoded = _decode(response);
+    if (response.statusCode < 200 || response.statusCode >= 300)
+      throw _failure(response, decoded);
+    _getCache.removeWhere(
+      (key, _) =>
+          key.contains('/chat') ||
+          key.contains('diagrams/${_segment(diagramId)}'),
+    );
+  }
+
+  Future<Uint8List> chatImage(String diagramId, String imageId) async {
+    final bearer = _token;
+    if (bearer == null || bearer.isEmpty) {
+      throw const ApiFailure('Inicie sesión para continuar.', statusCode: 401);
+    }
+    final response = await _client.get(
+      endpoint(
+        'diagrams/${_segment(diagramId)}/chat-images/${_segment(imageId)}',
+      ),
+      headers: {'Accept': 'image/*', 'Authorization': 'Bearer $bearer'},
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _failure(response, _decode(response));
+    }
+    return response.bodyBytes;
   }
 
   Future<List<ActivityItem>> activity(

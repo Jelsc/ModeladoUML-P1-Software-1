@@ -5,8 +5,9 @@ import 'package:mobile_observer/ui/diagram_screen.dart';
 
 void main() {
   testWidgets(
-    'observability tabs show data without edit or chat-send controls',
+    'observability tabs show chat composer but no direct diagram edit controls',
     (tester) async {
+      String? sentMessage;
       final diagram = DiagramData.fromJson({
         'id': 'd-1',
         'title': 'Sistema de viajes',
@@ -37,37 +38,39 @@ void main() {
           },
         ],
       });
-    await tester.pumpWidget(
+      await tester.pumpWidget(
         MaterialApp(
           home: ReadOnlyDiagramWorkspace(
             diagram: diagram,
             messages: const [],
             channel: 'diseno',
             onChannelChanged: (_) {},
+            onSendMessage: (content) async => sentMessage = content,
             activity: const [],
             digest: null,
             members: const [],
             aiSettings: null,
           ),
         ),
-    );
-    await tester.tap(find.text('Lista').first);
-    await tester.pumpAndSettle();
+      );
+      await tester.tap(find.text('Lista').first);
+      await tester.pumpAndSettle();
 
       expect(find.text('Viaje'), findsNWidgets(2));
       expect(find.text('destino: string'), findsOneWidget);
       expect(find.byType(TextField), findsNothing);
       expect(find.byType(FloatingActionButton), findsNothing);
       expect(find.text('Editar'), findsNothing);
-      expect(find.text('Enviar'), findsNothing);
+      expect(find.byKey(const Key('chat-send-button')), findsNothing);
+      expect(find.byTooltip('Analizar foto con IA'), findsNothing);
 
       for (final tab in ['Conversación', 'Bitácora', 'Resumen']) {
         await tester.tap(find.text(tab));
         await tester.pumpAndSettle();
         expect(
           find.byType(TextField),
-          findsNothing,
-          reason: '$tab has no composer',
+          tab == 'Conversación' ? findsOneWidget : findsNothing,
+          reason: '$tab composer availability',
         );
         expect(
           find.byType(FloatingActionButton),
@@ -76,11 +79,32 @@ void main() {
         );
         expect(find.text('Editar'), findsNothing, reason: '$tab has no editor');
         expect(
-          find.text('Enviar'),
-          findsNothing,
-          reason: '$tab has no chat send',
+          find.byKey(const Key('chat-send-button')),
+          tab == 'Conversación' ? findsOneWidget : findsNothing,
+          reason: '$tab send availability',
         );
+        expect(find.byTooltip('Analizar foto con IA'), findsNothing);
+        if (tab == 'Conversación') {
+          expect(find.textContaining('@ia'), findsOneWidget);
+          expect(find.text('Mensaje para todo el equipo'), findsOneWidget);
+        }
       }
+      await tester.tap(find.text('Conversación'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('chat-message-input')),
+        '@ia revisá el modelo',
+      );
+      await tester.tap(find.byKey(const Key('chat-send-button')));
+      await tester.pumpAndSettle();
+      expect(sentMessage, '@ia revisá el modelo');
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('chat-message-input')))
+            .controller!
+            .text,
+        isEmpty,
+      );
     },
   );
 }

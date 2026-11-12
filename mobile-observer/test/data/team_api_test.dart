@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -7,20 +8,122 @@ import 'package:mobile_observer/data/team_api.dart';
 import 'package:mobile_observer/models/team_models.dart';
 
 void main() {
-  test('notification inbox uses authenticated GET and parses persisted event', () async {
-    http.Request? request;
-    final api = TeamApi(baseUrl: 'https://example.test/api', client: MockClient((value) async {
-      request = value;
-      return http.Response(
-        '[]', 200,
+  test(
+    'chat message POST includes channel, AI permissions, reply and auth',
+    () async {
+      http.Request? request;
+      final api = TeamApi(
+        baseUrl: 'https://example.test/api',
+        client: MockClient((value) async {
+          request = value;
+          return http.Response('{}', 201);
+        }),
+      )..useToken('jwt');
+      await api.sendChatMessage(
+        'd/1',
+        content: '@ia revisá esto',
+        channel: 'desarrollo',
+        replyToId: 'm-0',
       );
-    }));
-    api.useToken('jwt');
-    final items = await api.notificationInbox();
-    expect(items, isEmpty);
-    expect(request!.method, 'GET');
-    expect(request!.url.path, '/api/notifications/inbox');
-    expect(request!.headers['authorization'], 'Bearer jwt');
+      expect(request!.method, 'POST');
+      expect(request!.url.path, '/api/diagrams/d%2F1/chat');
+      expect(request!.headers['authorization'], 'Bearer jwt');
+      expect(jsonDecode(request!.body), {
+        'content': '@ia revisá esto',
+        'channel': 'desarrollo',
+        'ai_read_only': false,
+        'reply_to_id': 'm-0',
+      });
+      api.close();
+    },
+  );
+
+  test(
+    'notification inbox uses authenticated GET and parses persisted event',
+    () async {
+      http.Request? request;
+      final api = TeamApi(
+        baseUrl: 'https://example.test/api',
+        client: MockClient((value) async {
+          request = value;
+          return http.Response('[]', 200);
+        }),
+      );
+      api.useToken('jwt');
+      final items = await api.notificationInbox();
+      expect(items, isEmpty);
+      expect(request!.method, 'GET');
+      expect(request!.url.path, '/api/notifications/inbox');
+      expect(request!.headers['authorization'], 'Bearer jwt');
+      api.close();
+    },
+  );
+
+  test(
+    'photo upload uses authenticated multipart and image retrieval is authenticated',
+    () async {
+      final requests = <http.BaseRequest>[];
+      final api = TeamApi(
+        baseUrl: 'https://example.test/api',
+        client: MockClient((request) async {
+          requests.add(request);
+          if (request.url.path.endsWith('/chat-images/image-1')) {
+            return http.Response.bytes(
+              [1, 2, 3],
+              200,
+              headers: {'content-type': 'image/png'},
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      )..useToken('jwt');
+
+      await api.uploadChatImage(
+        'diagram-1',
+        name: 'uml.png',
+        mimeType: 'image/png',
+        bytes: Uint8List.fromList([1, 2, 3]),
+      );
+      final image = await api.chatImage('diagram-1', 'image-1');
+      expect(image, [1, 2, 3]);
+      final upload = requests.first as http.Request;
+      expect(upload.method, 'POST');
+      expect(upload.url.path, '/api/vision/detect');
+      expect(upload.url.queryParameters['diagram_id'], 'diagram-1');
+      expect(upload.headers['authorization'], 'Bearer jwt');
+      expect(
+        upload.headers['content-type'],
+        startsWith('multipart/form-data; boundary='),
+      );
+      final multipartBody = utf8.decode(upload.bodyBytes);
+      expect(multipartBody, contains('name="file"; filename="uml.png"'));
+      expect(multipartBody, contains('content-type: image/png'));
+      expect(
+        requests.last.url.path,
+        '/api/diagrams/diagram-1/chat-images/image-1',
+      );
+      expect(requests.last.headers['authorization'], 'Bearer jwt');
+      api.close();
+    },
+  );
+
+  test('image retrieval reports authenticated endpoint failures', () async {
+    final api = TeamApi(
+      baseUrl: 'https://example.test',
+      client: MockClient(
+        (_) async => http.Response('{"detail":"No autorizado"}', 403),
+      ),
+    )..useToken('jwt');
+    await expectLater(
+      api.chatImage('d-1', 'image-1'),
+      throwsA(
+        isA<ApiFailure>().having(
+          (error) => error.statusCode,
+          'statusCode',
+          403,
+        ),
+      ),
+    );
     api.close();
   });
 

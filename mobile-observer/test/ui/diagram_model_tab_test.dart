@@ -115,7 +115,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
       }
       expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 1);
-      expect(find.text('Solo lectura'), findsOneWidget);
+      expect(find.text('Mensaje para todo el equipo'), findsOneWidget);
 
       await tester.tap(
         find.descendant(of: find.byType(TabBar), matching: find.text('Modelo')),
@@ -128,7 +128,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 500));
       await tester.drag(find.byType(TabBarView), const Offset(-300, 0));
       await tester.pump(const Duration(milliseconds: 500));
-      expect(find.text('Solo lectura'), findsOneWidget);
+      expect(find.text('Mensaje para todo el equipo'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       api.close();

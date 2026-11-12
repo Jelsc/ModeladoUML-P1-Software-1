@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../data/team_api.dart';
 import '../data/team_realtime.dart';
@@ -41,6 +44,284 @@ class _ObserverDiagramScreenState extends State<ObserverDiagramScreen>
   Timer? _readRefreshTimer;
   late final TabController _tabController;
   bool _diagramView = true;
+  bool _uploadingPhoto = false;
+  bool _sendingMessage = false;
+
+  bool get _canAnalyzePhoto =>
+      _channel == 'diseno' &&
+      (widget.summary.isOwner || widget.summary.memberRole == 'editor');
+
+  Future<void> _pickAndAnalyzePhoto() async {
+    if (_uploadingPhoto || !_canAnalyzePhoto) return;
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Galería'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('Cámara'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null || !mounted) return;
+    final file = await ImagePicker().pickImage(
+      source: source,
+      maxWidth: 2560,
+      maxHeight: 2560,
+      imageQuality: 85,
+    );
+    if (file == null || !mounted) return;
+    try {
+      final bytes = await file.readAsBytes();
+      if (bytes.length > 10 * 1024 * 1024)
+        throw const ApiFailure(
+          'La foto supera 10 MB. Elegí una imagen más pequeña.',
+        );
+      final mimeType = detectImageMime(bytes);
+      if (mimeType == null)
+        throw const ApiFailure(
+          'La imagen no tiene un formato compatible (JPEG, PNG, WebP o HEIC).',
+        );
+      setState(() => _uploadingPhoto = true);
+      final proposal = await widget.api.uploadChatImage(
+        widget.summary.id,
+        name: file.name,
+        mimeType: mimeType,
+        bytes: bytes,
+      );
+      if (!mounted) return;
+      final accepted = await _reviewVisionProposal(proposal);
+      if (accepted != null && mounted) {
+        await widget.api.applyVisionProposal(widget.summary.id, accepted);
+        await _loadAll(refresh: true);
+      }
+    } on ApiFailure catch (error) {
+      if (error.unauthorized) widget.onUnauthorized();
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo completar el análisis: $error')),
+        );
+    } finally {
+      if (mounted) setState(() => _uploadingPhoto = false);
+      if (mounted) {
+        try {
+          final history = await widget.api.chat(
+            widget.summary.id,
+            channel: 'diseno',
+            refresh: true,
+          );
+          if (mounted && _channel == 'diseno')
+            setState(() => _messages = _mergeMessages(_messages, history));
+        } catch (_) {}
+      }
+    }
+  }
+
+  Future<VisionProposal?> _reviewVisionProposal(VisionProposal proposal) async {
+    final classes = proposal.classes.map((c) => c).toList();
+    final selectedRelations = {
+      for (final r in proposal.relations) r.id: r.selected,
+    };
+    return showDialog<VisionProposal>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: Text('Revisar propuesta: ${proposal.projectName}'),
+          content: SizedBox(
+            width: 520,
+            height: MediaQuery.sizeOf(context).height * 0.65,
+            child: ListView(
+              children: [
+                for (var i = 0; i < classes.length; i++) ...[
+                  CheckboxListTile(
+                    value: classes[i].selected,
+                    title: Text(classes[i].name),
+                    onChanged: (v) => update(() {
+                      classes[i] = VisionClass(
+                        id: classes[i].id,
+                        name: classes[i].name,
+                        selected: v ?? false,
+                        attributes: classes[i].attributes
+                            .map(
+                              (a) => VisionAttribute(
+                                id: a.id,
+                                name: a.name,
+                                type: a.type,
+                                selected: v == true,
+                              ),
+                            )
+                            .toList(),
+                        methods: classes[i].methods
+                            .map(
+                              (m) => VisionMethod(
+                                id: m.id,
+                                name: m.name,
+                                returnType: m.returnType,
+                                selected: v == true,
+                              ),
+                            )
+                            .toList(),
+                      );
+                      for (final r in proposal.relations.where(
+                        (r) =>
+                            r.sourceId == classes[i].id ||
+                            r.targetId == classes[i].id ||
+                            r.associationClassId == classes[i].id,
+                      )) {
+                        selectedRelations[r.id] = false;
+                      }
+                    }),
+                  ),
+                  if (classes[i].selected) ...[
+                    for (final a in classes[i].attributes)
+                      CheckboxListTile(
+                        dense: true,
+                        value: a.selected,
+                        title: Text('${a.name}: ${a.type}'),
+                        onChanged: (v) => update(() {
+                          final c = classes[i];
+                          classes[i] = VisionClass(
+                            id: c.id,
+                            name: c.name,
+                            selected: c.selected,
+                            attributes: c.attributes
+                                .map(
+                                  (x) => x.id == a.id
+                                      ? VisionAttribute(
+                                          id: x.id,
+                                          name: x.name,
+                                          type: x.type,
+                                          selected: v ?? false,
+                                        )
+                                      : x,
+                                )
+                                .toList(),
+                            methods: c.methods,
+                          );
+                        }),
+                      ),
+                    for (final m in classes[i].methods)
+                      CheckboxListTile(
+                        dense: true,
+                        value: m.selected,
+                        title: Text('${m.name}(): ${m.returnType}'),
+                        onChanged: (v) => update(() {
+                          final c = classes[i];
+                          classes[i] = VisionClass(
+                            id: c.id,
+                            name: c.name,
+                            selected: c.selected,
+                            attributes: c.attributes,
+                            methods: c.methods
+                                .map(
+                                  (x) => x.id == m.id
+                                      ? VisionMethod(
+                                          id: x.id,
+                                          name: x.name,
+                                          returnType: x.returnType,
+                                          selected: v ?? false,
+                                        )
+                                      : x,
+                                )
+                                .toList(),
+                          );
+                        }),
+                      ),
+                  ],
+                ],
+                for (final r in proposal.relations)
+                  CheckboxListTile(
+                    value:
+                        selectedRelations[r.id] == true &&
+                        classes.any((c) => c.id == r.sourceId && c.selected) &&
+                        classes.any((c) => c.id == r.targetId && c.selected) &&
+                        (r.associationClassId.isEmpty ||
+                            classes.any(
+                              (c) => c.id == r.associationClassId && c.selected,
+                            )),
+                    title: Text('${r.source} — ${r.type} — ${r.target}'),
+                    subtitle: Text(
+                      '${r.sourceMultiplicity ?? ''} : ${r.targetMultiplicity ?? ''}'
+                      '${r.associationClass == null ? '' : ' · Clase de asociación: ${r.associationClass}'}',
+                    ),
+                    onChanged:
+                        classes.any((c) => c.id == r.sourceId && c.selected) &&
+                            classes.any(
+                              (c) => c.id == r.targetId && c.selected,
+                            ) &&
+                            (r.associationClassId.isEmpty ||
+                                classes.any(
+                                  (c) =>
+                                      c.id == r.associationClassId &&
+                                      c.selected,
+                                ))
+                        ? (v) =>
+                              update(() => selectedRelations[r.id] = v ?? false)
+                        : null,
+                  ),
+                for (final warning in proposal.warnings)
+                  ListTile(
+                    leading: const Icon(Icons.warning_amber),
+                    title: Text(warning),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: classes.any((item) => item.selected)
+                  ? () => Navigator.pop(
+                      dialogContext,
+                      VisionProposal(
+                        projectName: proposal.projectName,
+                        classes: classes,
+                        relations: proposal.relations
+                            .map(
+                              (r) => VisionRelation(
+                                id: r.id,
+                                sourceId: r.sourceId,
+                                targetId: r.targetId,
+                                source: r.source,
+                                target: r.target,
+                                type: r.type,
+                                label: r.label,
+                                sourceMultiplicity: r.sourceMultiplicity,
+                                targetMultiplicity: r.targetMultiplicity,
+                                associationClass: r.associationClass,
+                                associationClassId: r.associationClassId,
+                                selected: selectedRelations[r.id] == true,
+                              ),
+                            )
+                            .toList(),
+                        warnings: proposal.warnings,
+                      ),
+                    )
+                  : null,
+              child: const Text('Aceptar y agregar al diagrama'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -152,6 +433,31 @@ class _ObserverDiagramScreenState extends State<ObserverDiagramScreen>
           () => _error = 'No se pudo cargar este canal de conversación.',
         );
       }
+    }
+  }
+
+  Future<void> _sendMessage(String content) async {
+    if (_sendingMessage) return;
+    setState(() => _sendingMessage = true);
+    try {
+      await widget.api.sendChatMessage(
+        widget.summary.id,
+        content: content,
+        channel: _channel,
+      );
+      final history = await widget.api.chat(
+        widget.summary.id,
+        channel: _channel,
+        refresh: true,
+      );
+      if (mounted) {
+        setState(() => _messages = _mergeMessages(_messages, history));
+      }
+    } on ApiFailure catch (error) {
+      _handleRequestFailure(error);
+      rethrow;
+    } finally {
+      if (mounted) setState(() => _sendingMessage = false);
     }
   }
 
@@ -373,6 +679,12 @@ class _ObserverDiagramScreenState extends State<ObserverDiagramScreen>
                         messages: _messages,
                         channel: _channel,
                         onChannelChanged: _loadChannel,
+                        api: widget.api,
+                        canAnalyzePhoto: _canAnalyzePhoto,
+                        uploadingPhoto: _uploadingPhoto,
+                        onAnalyzePhoto: _pickAndAnalyzePhoto,
+                        onSendMessage: _sendMessage,
+                        sendingMessage: _sendingMessage,
                       ),
                       ActivityReadOnlyTab(items: _activity),
                       SummaryReadOnlyTab(
@@ -591,6 +903,37 @@ class _UmlPainter extends CustomPainter {
           ..color = ObserverTheme.blue
           ..strokeWidth = 2,
       );
+      final association = byId[relation.associationClassId];
+      if (association != null) {
+        final mid = Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
+        final rect = Rect.fromLTWH(
+          association.x.toDouble(),
+          association.y.toDouble(),
+          nodeWidth,
+          _nodeHeight(association),
+        );
+        final center = rect.center;
+        final dx = mid.dx - center.dx, dy = mid.dy - center.dy;
+        final scale =
+            1 / (dx.abs() / (rect.width / 2)).clamp(0.0001, double.infinity);
+        final sy =
+            1 / (dy.abs() / (rect.height / 2)).clamp(0.0001, double.infinity);
+        final t = scale < sy ? scale : sy;
+        final border = Offset(center.dx + dx * t, center.dy + dy * t);
+        final delta = border - mid;
+        final length = delta.distance;
+        final dashPaint = Paint()
+          ..color = ObserverTheme.blue
+          ..strokeWidth = 1.5;
+        for (double distance = 0; distance < length; distance += 10) {
+          final end = (distance + 5).clamp(0, length).toDouble();
+          canvas.drawLine(
+            mid + delta / length * distance,
+            mid + delta / length * end,
+            dashPaint,
+          );
+        }
+      }
       final label =
           '${relation.type}${relation.label == null ? '' : ' · ${relation.label}'}${relation.sourceMultiplicity == null && relation.targetMultiplicity == null ? '' : ' · ${relation.sourceMultiplicity ?? ''} — ${relation.targetMultiplicity ?? ''}'}';
       _drawText(
@@ -692,16 +1035,55 @@ class _UmlPainter extends CustomPainter {
       oldDelegate.colors != colors;
 }
 
-class ChatReadOnlyTab extends StatelessWidget {
+class ChatReadOnlyTab extends StatefulWidget {
   const ChatReadOnlyTab({
     super.key,
     required this.messages,
     required this.channel,
     required this.onChannelChanged,
+    this.api,
+    this.canAnalyzePhoto = false,
+    this.uploadingPhoto = false,
+    this.onAnalyzePhoto,
+    this.onSendMessage,
+    this.sendingMessage = false,
   });
   final List<ChatMessage> messages;
   final String channel;
   final ValueChanged<String> onChannelChanged;
+  final TeamApi? api;
+  final bool canAnalyzePhoto;
+  final bool uploadingPhoto;
+  final VoidCallback? onAnalyzePhoto;
+  final Future<void> Function(String content)? onSendMessage;
+  final bool sendingMessage;
+
+  @override
+  State<ChatReadOnlyTab> createState() => _ChatReadOnlyTabState();
+}
+
+class _ChatReadOnlyTabState extends State<ChatReadOnlyTab> {
+  final _messageController = TextEditingController();
+  String? _sendError;
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final content = _messageController.text.trim();
+    final callback = widget.onSendMessage;
+    if (content.isEmpty || callback == null || widget.sendingMessage) return;
+    setState(() => _sendError = null);
+    try {
+      await callback(content);
+      if (mounted) _messageController.clear();
+    } catch (error) {
+      if (mounted) setState(() => _sendError = error.toString());
+    }
+  }
 
   @override
   Widget build(BuildContext context) => Column(
@@ -710,15 +1092,15 @@ class ChatReadOnlyTab extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
         child: Row(
           children: [
-            const Icon(Icons.lock_outline, size: 17),
+            const Icon(Icons.groups_outlined, size: 17),
             const SizedBox(width: 7),
             Text(
-              'Solo lectura',
+              'Mensaje para todo el equipo',
               style: Theme.of(context).textTheme.labelMedium,
             ),
             const Spacer(),
             DropdownButton<String>(
-              value: channel,
+              value: widget.channel,
               underline: const SizedBox.shrink(),
               items: const [
                 DropdownMenuItem(value: 'diseno', child: Text('Diseño')),
@@ -729,14 +1111,14 @@ class ChatReadOnlyTab extends StatelessWidget {
                 DropdownMenuItem(value: 'test', child: Text('Test')),
               ],
               onChanged: (value) {
-                if (value != null) onChannelChanged(value);
+                if (value != null) widget.onChannelChanged(value);
               },
             ),
           ],
         ),
       ),
       Expanded(
-        child: messages.isEmpty
+        child: widget.messages.isEmpty
             ? const Center(
                 child: _EmptyNote('Todavía no hay mensajes en este canal.'),
               )
@@ -744,12 +1126,71 @@ class ChatReadOnlyTab extends StatelessWidget {
                 reverse: true,
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
-                itemCount: messages.length,
+                itemCount: widget.messages.length,
                 itemBuilder: (context, index) => _MessageCard(
-                  message: messages[messages.length - index - 1],
+                  message: widget.messages[widget.messages.length - index - 1],
+                  api: widget.api,
                 ),
               ),
       ),
+      if (widget.onSendMessage != null)
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_sendError != null)
+                  Text(_sendError!, key: const Key('chat-send-error')),
+                Row(
+                  children: [
+                    if (widget.canAnalyzePhoto)
+                      IconButton(
+                        tooltip: widget.uploadingPhoto
+                            ? 'Analizando foto'
+                            : 'Analizar foto',
+                        onPressed: widget.uploadingPhoto
+                            ? null
+                            : widget.onAnalyzePhoto,
+                        icon: widget.uploadingPhoto
+                            ? const SizedBox.square(
+                                dimension: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.camera_alt_outlined),
+                      ),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('chat-message-input'),
+                        controller: _messageController,
+                        minLines: 1,
+                        maxLines: 4,
+                        decoration: const InputDecoration(
+                          hintText:
+                              'Escribí al equipo; incluí @ia para pedir ayuda o cambios al diagrama.',
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      key: const Key('chat-send-button'),
+                      tooltip: 'Enviar mensaje',
+                      onPressed: widget.sendingMessage ? null : _send,
+                      icon: widget.sendingMessage
+                          ? const SizedBox.square(
+                              dimension: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
     ],
   );
 }
@@ -798,7 +1239,8 @@ class SummaryReadOnlyTab extends StatelessWidget {
               : settings.canEdit
               ? 'IA activa · puede editar'
               : 'IA activa · solo responde',
-          subtitle: 'La aplicación no envía solicitudes a la IA.',
+          subtitle:
+              'La conversación es visible para todo el equipo. No hay edición directa del diagrama; los cambios solicitados a la IA dependen de permisos y aprobaciones del servidor.',
           tint: const Color(0xFFFFF1D9),
         ),
         const SizedBox(height: 20),
@@ -830,6 +1272,7 @@ class ReadOnlyDiagramWorkspace extends StatelessWidget {
     required this.digest,
     required this.members,
     required this.aiSettings,
+    this.onSendMessage,
   });
   final DiagramData diagram;
   final List<ChatMessage> messages;
@@ -839,6 +1282,7 @@ class ReadOnlyDiagramWorkspace extends StatelessWidget {
   final DiagramDigest? digest;
   final List<DiagramMember> members;
   final AiSettings? aiSettings;
+  final Future<void> Function(String content)? onSendMessage;
 
   @override
   Widget build(BuildContext context) => DefaultTabController(
@@ -862,6 +1306,7 @@ class ReadOnlyDiagramWorkspace extends StatelessWidget {
             messages: messages,
             channel: channel,
             onChannelChanged: onChannelChanged,
+            onSendMessage: onSendMessage,
           ),
           ActivityReadOnlyTab(items: activity),
           SummaryReadOnlyTab(
@@ -980,8 +1425,9 @@ class _RelationCard extends StatelessWidget {
 }
 
 class _MessageCard extends StatelessWidget {
-  const _MessageCard({required this.message});
+  const _MessageCard({required this.message, required this.api});
   final ChatMessage message;
+  final TeamApi? api;
   @override
   Widget build(BuildContext context) => Card(
     child: Padding(
@@ -1016,9 +1462,77 @@ class _MessageCard extends StatelessWidget {
               context,
             ).textTheme.bodyMedium?.copyWith(height: 1.45),
           ),
+          if (message.image != null && api != null) ...[
+            const SizedBox(height: 10),
+            _ChatImage(
+              api: api!,
+              diagramId: message.diagramId,
+              image: message.image!,
+            ),
+          ],
         ],
       ),
     ),
+  );
+}
+
+class _ChatImage extends StatefulWidget {
+  const _ChatImage({
+    required this.api,
+    required this.diagramId,
+    required this.image,
+  });
+  final TeamApi api;
+  final String diagramId;
+  final ChatImageMetadata image;
+
+  @override
+  State<_ChatImage> createState() => _ChatImageState();
+}
+
+class _ChatImageState extends State<_ChatImage> {
+  late Future<Uint8List> _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _bytes = widget.api.chatImage(widget.diagramId, widget.image.id);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.diagramId != widget.diagramId ||
+        oldWidget.image.id != widget.image.id ||
+        oldWidget.api != widget.api) {
+      _bytes = widget.api.chatImage(widget.diagramId, widget.image.id);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Uint8List>(
+    future: _bytes,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return const Text('La foto adjunta no está disponible.');
+      }
+      if (!snapshot.hasData) {
+        return const SizedBox(
+          height: 96,
+          child: Center(child: CircularProgressIndicator()),
+        );
+      }
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.memory(
+          snapshot.data!,
+          width: 280,
+          height: 220,
+          fit: BoxFit.contain,
+          errorBuilder: (_, _, _) => const Text('No se pudo mostrar la foto.'),
+        ),
+      );
+    },
   );
 }
 
@@ -1374,4 +1888,24 @@ String _formatDate(DateTime? value) {
   final date = value.toLocal();
   return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')} '
       '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+}
+
+String? detectImageMime(Uint8List b) {
+  bool starts(List<int> sig) =>
+      b.length >= sig.length &&
+      List.generate(sig.length, (i) => b[i] == sig[i]).every((v) => v);
+  if (starts([0xff, 0xd8, 0xff])) return 'image/jpeg';
+  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    return 'image/png';
+  if (b.length >= 12 &&
+      ascii.decode(b.sublist(0, 4), allowInvalid: true) == 'RIFF' &&
+      ascii.decode(b.sublist(8, 12), allowInvalid: true) == 'WEBP')
+    return 'image/webp';
+  if (b.length >= 12 &&
+      ascii.decode(b.sublist(4, 8), allowInvalid: true) == 'ftyp') {
+    final brand = ascii.decode(b.sublist(8, 12), allowInvalid: true);
+    if (brand == 'heic' || brand == 'heix') return 'image/heic';
+    if (brand == 'heif' || brand == 'mif1') return 'image/heif';
+  }
+  return null;
 }

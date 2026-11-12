@@ -7,6 +7,8 @@ const dashboard = readFileSync(new URL("../src/pages/DashboardPage.jsx", import.
 const styles = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
 const chat = readFileSync(new URL("../src/features/chat/ChatPanel.jsx", import.meta.url), "utf8");
 const board = readFileSync(new URL("../src/pages/board-canvas.jsx", import.meta.url), "utf8");
+const nginxProd = readFileSync(new URL("../../infra/nginx/templates/default.prod.conf.template", import.meta.url), "utf8");
+const nginxBootstrap = readFileSync(new URL("../../infra/nginx/templates/default.prod-bootstrap.conf.template", import.meta.url), "utf8");
 
 assert.match(dashboard, /Generar desde foto/);
 assert.match(modal, /PHOTO_IMPORT_STATES/);
@@ -25,7 +27,12 @@ assert.match(modal, /Agregar al diagrama actual/);
 assert.match(api, /FormData/);
 assert.match(api, /\/vision\/detect/);
 assert.match(api, /\/vision\/apply/);
-assert.match(api, /120000/);
+assert.match(api, /600000/);
+for (const config of [nginxProd, nginxBootstrap]) {
+  assert.equal((config.match(/proxy_connect_timeout 30s;/g) || []).length, 2);
+  assert.equal((config.match(/proxy_send_timeout 600s;/g) || []).length, 2);
+  assert.equal((config.match(/proxy_read_timeout 600s;/g) || []).length, 2);
+}
 assert.match(api, /diagrams\/\$\{encodeURIComponent\(diagramId\)\}\/vision\/apply/);
 assert.match(chat, /current\.id === "diseno" && canImportPhoto/);
 assert.match(board, /canImportPhoto=\{!readOnly\}/);
